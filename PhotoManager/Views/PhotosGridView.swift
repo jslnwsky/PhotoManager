@@ -1,5 +1,6 @@
 import SwiftUI
 import SwiftData
+import Photos
 
 struct PhotosGridView: View {
     @Environment(\.modelContext) private var modelContext
@@ -83,6 +84,8 @@ struct PhotosGridView: View {
 
 struct PhotoThumbnailView: View {
     let photo: Photo
+    @State private var liveImage: UIImage? = nil
+    @State private var requestID: PHImageRequestID? = nil
     
     private var borderColor: Color {
         if photo.hasFullMetadata {
@@ -96,11 +99,15 @@ struct PhotoThumbnailView: View {
         }
     }
     
+    private var displayImage: UIImage? {
+        if let data = photo.thumbnailData, let img = UIImage(data: data) { return img }
+        return liveImage
+    }
+    
     var body: some View {
         ZStack(alignment: .bottomLeading) {
-            if let thumbnailData = photo.thumbnailData,
-               let uiImage = UIImage(data: thumbnailData) {
-                Image(uiImage: uiImage)
+            if let image = displayImage {
+                Image(uiImage: image)
                     .resizable()
                     .aspectRatio(contentMode: .fill)
                     .frame(width: 150, height: 150)
@@ -116,8 +123,8 @@ struct PhotoThumbnailView: View {
                     .frame(width: 150, height: 150)
                     .cornerRadius(8)
                     .overlay {
-                        Image(systemName: "photo")
-                            .foregroundColor(.gray)
+                        ProgressView()
+                            .tint(.gray)
                     }
                     .overlay(
                         RoundedRectangle(cornerRadius: 8)
@@ -138,6 +145,39 @@ struct PhotoThumbnailView: View {
                 .cornerRadius(6)
                 .padding(6)
             }
+        }
+        .onAppear { loadLiveThumbnailIfNeeded() }
+        .onDisappear { cancelLiveThumbnail() }
+    }
+    
+    private func loadLiveThumbnailIfNeeded() {
+        guard photo.thumbnailData == nil,
+              photo.filePath.hasPrefix("photos://asset/") else { return }
+        
+        let identifier = String(photo.filePath.dropFirst("photos://asset/".count))
+        guard let asset = PHAsset.fetchAssets(withLocalIdentifiers: [identifier], options: nil).firstObject else { return }
+        
+        let options = PHImageRequestOptions()
+        options.deliveryMode = .opportunistic
+        options.resizeMode = .exact
+        options.isNetworkAccessAllowed = true
+        
+        requestID = PHImageManager.default().requestImage(
+            for: asset,
+            targetSize: CGSize(width: 300, height: 300),
+            contentMode: .aspectFill,
+            options: options
+        ) { image, _ in
+            if let image = image {
+                DispatchQueue.main.async { liveImage = image }
+            }
+        }
+    }
+    
+    private func cancelLiveThumbnail() {
+        if let id = requestID {
+            PHImageManager.default().cancelImageRequest(id)
+            requestID = nil
         }
     }
 }

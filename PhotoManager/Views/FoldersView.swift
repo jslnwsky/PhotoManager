@@ -20,6 +20,10 @@ struct FoldersView: View {
     @State private var photoScanProgress: Double = 0.0
     @State private var photoScanError: String? = nil
     @State private var photoLibraryService: PhotoLibraryService? = nil
+    @State private var isGeocoding = false
+    @State private var geocodeProgress: Double = 0.0
+    @State private var geocodeStatus: String = ""
+    @State private var geocodeError: String? = nil
 
     var iCloudFolders: [Folder] {
         folders.filter { $0.parentFolder == nil && $0.source == .iCloudDrive }
@@ -104,6 +108,26 @@ struct FoldersView: View {
                     }
                 }
 
+                if isGeocoding {
+                    Section {
+                        VStack(spacing: 8) {
+                            ProgressView(value: geocodeProgress)
+                            Text(geocodeStatus.isEmpty ? "Geocoding locations…" : "Geocoding: \(geocodeStatus)")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        .padding(.vertical, 4)
+                    }
+                }
+
+                if let error = geocodeError {
+                    Section {
+                        Label(error, systemImage: "exclamationmark.triangle")
+                            .foregroundStyle(.red)
+                            .font(.caption)
+                    }
+                }
+
                 Section("iCloud Drive") {
                     if storedRootURL == nil {
                         VStack(alignment: .leading, spacing: 6) {
@@ -163,7 +187,7 @@ struct FoldersView: View {
                     }
                 }
                 ToolbarItem(placement: .navigationBarLeading) {
-                    if !isScanning && !isEnriching && !isScanningPhotos {
+                    if !isScanning && !isEnriching && !isScanningPhotos && !isGeocoding {
                         Menu {
                             Button {
                                 if let url = storedRootURL { startScan(rootURL: url) }
@@ -182,9 +206,14 @@ struct FoldersView: View {
                                 Label("Change Folder", systemImage: "folder")
                             }
                             Button {
-                                startEnrich()
+                                startEnrich(rootURL: storedRootURL)
                             } label: {
                                 Label("Fetch Full Metadata", systemImage: "arrow.down.circle")
+                            }
+                            Button {
+                                startGeocoding()
+                            } label: {
+                                Label("Geocode Locations", systemImage: "mappin.and.ellipse")
                             }
                         } label: {
                             Image(systemName: "ellipsis.circle")
@@ -275,6 +304,26 @@ struct FoldersView: View {
                     photoLibraryService = nil // Release on error
                     photoScanError = error.localizedDescription
                 }
+            }
+        }
+    }
+
+    private func startGeocoding() {
+        isGeocoding = true
+        geocodeError = nil
+        geocodeProgress = 0.0
+        geocodeStatus = ""
+        Task {
+            let service = GeocodingService(modelContainer: modelContext.container)
+            let error = await service.geocodePhotos { progress, status in
+                Task { @MainActor in
+                    geocodeProgress = progress
+                    geocodeStatus = status
+                }
+            }
+            await MainActor.run {
+                isGeocoding = false
+                geocodeError = error
             }
         }
     }

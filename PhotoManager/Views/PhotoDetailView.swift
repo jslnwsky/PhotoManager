@@ -179,6 +179,12 @@ struct LocationSection: View {
                 .frame(height: 200)
                 .cornerRadius(12)
                 
+                if let city = photo.city, let country = photo.country {
+                    MetadataRow(label: "Location", value: "\(city), \(country)")
+                } else if let country = photo.country {
+                    MetadataRow(label: "Location", value: country)
+                }
+                
                 MetadataRow(label: "Coordinates", value: String(format: "%.6f, %.6f", location.coordinate.latitude, location.coordinate.longitude))
                 
                 if let altitude = photo.altitude {

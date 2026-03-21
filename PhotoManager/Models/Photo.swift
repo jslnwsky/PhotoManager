@@ -28,6 +28,8 @@ final class Photo {
     var originalMetadataJSON: String?
     var thumbnailData: Data?
     var hasFullMetadata: Bool
+    var city: String?
+    var country: String?
     var folder: Folder?
     
     @Relationship(deleteRule: .cascade, inverse: \PhotoTag.photo)
@@ -58,6 +60,8 @@ final class Photo {
         originalMetadataJSON: String? = nil,
         thumbnailData: Data? = nil,
         hasFullMetadata: Bool = false,
+        city: String? = nil,
+        country: String? = nil,
         folder: Folder? = nil
     ) {
         self.filePath = filePath
@@ -84,6 +88,8 @@ final class Photo {
         self.originalMetadataJSON = originalMetadataJSON
         self.thumbnailData = thumbnailData
         self.hasFullMetadata = hasFullMetadata
+        self.city = city
+        self.country = country
         self.folder = folder
     }
     

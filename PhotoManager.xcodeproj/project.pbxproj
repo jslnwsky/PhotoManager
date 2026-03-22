@@ -9,6 +9,9 @@
 /* Begin PBXBuildFile section */
 		31CB2D1A2F6EF28500C4672D /* PhotoLibraryService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 31CB2D192F6EF28500C4672D /* PhotoLibraryService.swift */; };
 		31CB2D1C2F6F5BBE00C4672D /* GeocodingService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 31CB2D1B2F6F5BBE00C4672D /* GeocodingService.swift */; };
+		31CB2D1E2F70256C00C4672D /* PhotoAssetHelper.swift in Sources */ = {isa = PBXBuildFile; fileRef = 31CB2D1D2F70256C00C4672D /* PhotoAssetHelper.swift */; };
+		31CB2D202F70300000C4672D /* FoldersViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 31CB2D1F2F70300000C4672D /* FoldersViewModel.swift */; };
+		31CB2D222F70400000C4672D /* PhotoLocation.swift in Sources */ = {isa = PBXBuildFile; fileRef = 31CB2D212F70400000C4672D /* PhotoLocation.swift */; };
 		B10000001B000000000000001 /* PhotoManagerApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000001B000000000000002 /* PhotoManagerApp.swift */; };
 		B10000001B000000000000003 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000001B000000000000004 /* ContentView.swift */; };
 		B10000001B000000000000005 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = B10000001B000000000000006 /* Assets.xcassets */; };
@@ -26,13 +29,15 @@
 		B10000001B00000000000001D /* TagsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000001B00000000000001E /* TagsView.swift */; };
 		B10000001B00000000000001F /* SearchView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000001B000000000000020 /* SearchView.swift */; };
 		B10000001B000000000000021 /* PhotoDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000001B000000000000022 /* PhotoDetailView.swift */; };
-		B10000001B000000000000023 /* IndexingProgressView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000001B000000000000024 /* IndexingProgressView.swift */; };
 		B10000001B000000000000025 /* TagPickerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000001B000000000000026 /* TagPickerView.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
 		31CB2D192F6EF28500C4672D /* PhotoLibraryService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhotoLibraryService.swift; sourceTree = "<group>"; };
 		31CB2D1B2F6F5BBE00C4672D /* GeocodingService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GeocodingService.swift; sourceTree = "<group>"; };
+		31CB2D1D2F70256C00C4672D /* PhotoAssetHelper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhotoAssetHelper.swift; sourceTree = "<group>"; };
+		31CB2D1F2F70300000C4672D /* FoldersViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FoldersViewModel.swift; sourceTree = "<group>"; };
+		31CB2D212F70400000C4672D /* PhotoLocation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhotoLocation.swift; sourceTree = "<group>"; };
 		B10000001B000000000000002 /* PhotoManagerApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhotoManagerApp.swift; sourceTree = "<group>"; };
 		B10000001B000000000000004 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		B10000001B000000000000006 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
@@ -50,7 +55,6 @@
 		B10000001B00000000000001E /* TagsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TagsView.swift; sourceTree = "<group>"; };
 		B10000001B000000000000020 /* SearchView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SearchView.swift; sourceTree = "<group>"; };
 		B10000001B000000000000022 /* PhotoDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhotoDetailView.swift; sourceTree = "<group>"; };
-		B10000001B000000000000024 /* IndexingProgressView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IndexingProgressView.swift; sourceTree = "<group>"; };
 		B10000001B000000000000026 /* TagPickerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TagPickerView.swift; sourceTree = "<group>"; };
 		B10000001B000000000000027 /* PhotoManager.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = PhotoManager.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		B10000001B000000000000028 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
@@ -85,6 +89,7 @@
 				B10000001B000000000000004 /* ContentView.swift */,
 				B10000001B00000000000002E /* Models */,
 				B10000001B00000000000002F /* Services */,
+				31CB2D212F70300000C4672D /* ViewModels */,
 				B10000001B000000000000030 /* Views */,
 				B10000001B000000000000006 /* Assets.xcassets */,
 				B10000001B000000000000031 /* Preview Content */,
@@ -104,6 +109,7 @@
 			isa = PBXGroup;
 			children = (
 				B10000001B00000000000000A /* Photo.swift */,
+				31CB2D212F70400000C4672D /* PhotoLocation.swift */,
 				B10000001B00000000000000C /* Tag.swift */,
 				B10000001B00000000000000E /* Folder.swift */,
 				B10000001B000000000000010 /* PhotoTag.swift */,
@@ -115,6 +121,7 @@
 			isa = PBXGroup;
 			children = (
 				31CB2D192F6EF28500C4672D /* PhotoLibraryService.swift */,
+				31CB2D1D2F70256C00C4672D /* PhotoAssetHelper.swift */,
 				31CB2D1B2F6F5BBE00C4672D /* GeocodingService.swift */,
 				B10000001B000000000000012 /* iCloudDriveService.swift */,
 				B10000001B000000000000014 /* MetadataExtractor.swift */,
@@ -132,10 +139,17 @@
 				B10000001B00000000000001E /* TagsView.swift */,
 				B10000001B000000000000020 /* SearchView.swift */,
 				B10000001B000000000000022 /* PhotoDetailView.swift */,
-				B10000001B000000000000024 /* IndexingProgressView.swift */,
 				B10000001B000000000000026 /* TagPickerView.swift */,
 			);
 			path = Views;
+			sourceTree = "<group>";
+		};
+		31CB2D212F70300000C4672D /* ViewModels */ = {
+			isa = PBXGroup;
+			children = (
+				31CB2D1F2F70300000C4672D /* FoldersViewModel.swift */,
+			);
+			path = ViewModels;
 			sourceTree = "<group>";
 		};
 		B10000001B000000000000031 /* Preview Content */ = {
@@ -223,6 +237,7 @@
 				B10000001B00000000000000D /* Folder.swift in Sources */,
 				31CB2D1C2F6F5BBE00C4672D /* GeocodingService.swift in Sources */,
 				B10000001B00000000000000F /* PhotoTag.swift in Sources */,
+				31CB2D1E2F70256C00C4672D /* PhotoAssetHelper.swift in Sources */,
 				31CB2D1A2F6EF28500C4672D /* PhotoLibraryService.swift in Sources */,
 				B10000001B000000000000011 /* iCloudDriveService.swift in Sources */,
 				B10000001B000000000000013 /* MetadataExtractor.swift in Sources */,
@@ -233,7 +248,8 @@
 				B10000001B00000000000001D /* TagsView.swift in Sources */,
 				B10000001B00000000000001F /* SearchView.swift in Sources */,
 				B10000001B000000000000021 /* PhotoDetailView.swift in Sources */,
-				B10000001B000000000000023 /* IndexingProgressView.swift in Sources */,
+				31CB2D202F70300000C4672D /* FoldersViewModel.swift in Sources */,
+				31CB2D222F70400000C4672D /* PhotoLocation.swift in Sources */,
 				B10000001B000000000000025 /* TagPickerView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

@@ -6,8 +6,11 @@ struct SearchView: View {
     @Query(sort: \Tag.name) private var tags: [Tag]
 
     @State private var searchText = ""
+    @State private var debouncedSearchText = ""
     @State private var showingFilters = false
     @State private var filters = SearchFilters()
+
+    private static let maxResults = 200
 
     var activeFilterCount: Int {
         var count = 0
@@ -20,8 +23,19 @@ struct SearchView: View {
     }
 
     var searchResults: [Photo] {
-        guard !searchText.isEmpty || activeFilterCount > 0 else { return [] }
-        return photos.filter { matches($0) }
+        guard !debouncedSearchText.isEmpty || activeFilterCount > 0 else { return [] }
+        var results: [Photo] = []
+        for photo in photos {
+            if matches(photo) {
+                results.append(photo)
+                if results.count >= Self.maxResults { break }
+            }
+        }
+        return results
+    }
+
+    var isResultsTruncated: Bool {
+        searchResults.count >= Self.maxResults
     }
 
     var body: some View {
@@ -31,7 +45,7 @@ struct SearchView: View {
                     ActiveFiltersBar(filters: $filters)
                 }
 
-                if searchText.isEmpty && activeFilterCount == 0 {
+                if debouncedSearchText.isEmpty && activeFilterCount == 0 {
                     ContentUnavailableView(
                         "Search Photos",
                         systemImage: "magnifyingglass",
@@ -45,7 +59,7 @@ struct SearchView: View {
                     )
                 } else {
                     ScrollView {
-                        Text("\(searchResults.count) photos")
+                        Text(isResultsTruncated ? "Showing first \(Self.maxResults) results" : "\(searchResults.count) photos")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .frame(maxWidth: .infinity, alignment: .leading)
@@ -67,6 +81,14 @@ struct SearchView: View {
             }
             .navigationTitle("Search")
             .searchable(text: $searchText, prompt: "Keyword, filename, description…")
+            .onChange(of: searchText) { _, newValue in
+                // Debounce: update debouncedSearchText after 300ms of no typing
+                let captured = newValue
+                Task {
+                    try? await Task.sleep(nanoseconds: 300_000_000)
+                    if searchText == captured { debouncedSearchText = captured }
+                }
+            }
             .toolbar {
                 ToolbarItem(placement: .primaryAction) {
                     Button {
@@ -86,8 +108,8 @@ struct SearchView: View {
 
     private func matches(_ photo: Photo) -> Bool {
         // Keyword search across multiple fields
-        if !searchText.isEmpty {
-            let q = searchText.lowercased()
+        if !debouncedSearchText.isEmpty {
+            let q = debouncedSearchText.lowercased()
             let textMatch = photo.fileName.lowercased().contains(q)
                 || photo.photoDescription?.lowercased().contains(q) == true
                 || photo.keywords.contains(where: { $0.lowercased().contains(q) })
@@ -123,7 +145,7 @@ struct SearchView: View {
 
         // Source filter
         if filters.source != .all {
-            let isPhotosLibrary = photo.filePath.hasPrefix("photos://asset/")
+            let isPhotosLibrary = PhotoAssetHelper.isPhotosLibraryPhoto(photo)
             if filters.source == .photosLibrary && !isPhotosLibrary { return false }
             if filters.source == .iCloudDrive && isPhotosLibrary { return false }
         }

@@ -43,6 +43,31 @@ actor GeocodingService {
                 for photo in group {
                     photo.city = placeName.city
                     photo.country = placeName.country
+                    
+                    // Update or create PhotoLocation for spatial index
+                    if let lat = photo.latitude, let lon = photo.longitude {
+                        // Use filePath as unique identifier
+                        let filePath = photo.filePath
+                        let descriptor = FetchDescriptor<PhotoLocation>(
+                            predicate: #Predicate { $0.photoFilePath == filePath }
+                        )
+                        let existing = try? modelContext.fetch(descriptor).first
+                        
+                        if let existing {
+                            existing.latitude = lat
+                            existing.longitude = lon
+                            existing.captureDate = photo.captureDate
+                        } else {
+                            let photoLocation = PhotoLocation(
+                                photoFilePath: photo.filePath,
+                                latitude: lat,
+                                longitude: lon,
+                                captureDate: photo.captureDate
+                            )
+                            modelContext.insert(photoLocation)
+                        }
+                    }
+                    
                     photosProcessed += 1
                 }
 

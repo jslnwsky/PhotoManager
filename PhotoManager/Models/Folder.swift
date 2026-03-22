@@ -19,8 +19,8 @@ final class Folder {
     @Relationship(deleteRule: .cascade, inverse: \Folder.parentFolder)
     var childFolders: [Folder]
     
-    @Relationship(deleteRule: .nullify, inverse: \Photo.folder)
-    var photos: [Photo]?
+    @Relationship(deleteRule: .nullify, inverse: \Photo.folders)
+    var photos: [Photo]
     
     init(name: String, path: String, sourceType: FolderSource, parentFolder: Folder? = nil) {
         self.name = name
@@ -29,6 +29,7 @@ final class Folder {
         self.createdDate = Date()
         self.parentFolder = parentFolder
         self.childFolders = []
+        self.photos = []
     }
     
     var source: FolderSource {
@@ -60,7 +61,7 @@ final class Folder {
     }
     
     var photoCount: Int {
-        var count = photos?.count ?? 0
+        var count = photos.count
         
         for child in childFolders {
             count += child.photoCount

@@ -149,34 +149,15 @@ struct PhotoThumbnailView: View {
     }
     
     private func loadLiveThumbnailIfNeeded() {
-        guard photo.thumbnailData == nil,
-              photo.filePath.hasPrefix("photos://asset/") else { return }
-        
-        let identifier = String(photo.filePath.dropFirst("photos://asset/".count))
-        guard let asset = PHAsset.fetchAssets(withLocalIdentifiers: [identifier], options: nil).firstObject else { return }
-        
-        let options = PHImageRequestOptions()
-        options.deliveryMode = .opportunistic
-        options.resizeMode = .exact
-        options.isNetworkAccessAllowed = true
-        
-        requestID = PHImageManager.default().requestImage(
-            for: asset,
-            targetSize: CGSize(width: 300, height: 300),
-            contentMode: .aspectFill,
-            options: options
-        ) { image, _ in
-            if let image = image {
-                DispatchQueue.main.async { liveImage = image }
-            }
+        guard photo.thumbnailData == nil, PhotoAssetHelper.isPhotosLibraryPhoto(photo) else { return }
+        requestID = PhotoAssetHelper.requestThumbnail(for: photo) { image in
+            if let image { DispatchQueue.main.async { liveImage = image } }
         }
     }
     
     private func cancelLiveThumbnail() {
-        if let id = requestID {
-            PHImageManager.default().cancelImageRequest(id)
-            requestID = nil
-        }
+        PhotoAssetHelper.cancelRequest(requestID)
+        requestID = nil
     }
 }
 

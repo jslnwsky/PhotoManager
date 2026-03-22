@@ -6,6 +6,7 @@ struct PhotoManagerApp: App {
     var sharedModelContainer: ModelContainer = {
         let schema = Schema([
             Photo.self,
+            PhotoLocation.self,
             Tag.self,
             Folder.self,
             PhotoTag.self

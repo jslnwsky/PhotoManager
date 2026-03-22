@@ -136,11 +136,28 @@ actor PhotoLibraryService {
             if index % 100 == 0 {
                 print("    🔄 Processing photo \(index)/\(totalAssets)...")
             }
-            // Create photo record
+            
+            let filePath = "photos://asset/\(asset.localIdentifier)"
+            
+            // Check if this photo already exists (from another album)
+            let descriptor = FetchDescriptor<Photo>(predicate: #Predicate { photo in
+                photo.filePath == filePath
+            })
+            if let existing = try? self.modelContext.fetch(descriptor).first {
+                // Just add this folder to the existing photo
+                if !existing.folders.contains(where: { $0.persistentModelID == folder.persistentModelID }) {
+                    existing.folders.append(folder)
+                }
+                count += 1
+                return
+            }
+            
+            // Create new photo record
             let photo = Photo(
-                filePath: "photos://asset/\(asset.localIdentifier)",
+                filePath: filePath,
                 fileName: self.getAssetFileName(asset),
-                fileSize: self.estimateAssetSize(asset)
+                fileSize: self.estimateAssetSize(asset),
+                folder: folder
             )
             
             // Extract metadata from PHAsset
@@ -155,8 +172,7 @@ actor PhotoLibraryService {
                 photo.altitude = location.altitude
             }
             
-            photo.folder = folder
-            photo.hasFullMetadata = false // Thumbnails + EXIF populated during Fetch Full Metadata
+            photo.hasFullMetadata = false
             
             self.modelContext.insert(photo)
             count += 1

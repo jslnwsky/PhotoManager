@@ -51,28 +51,13 @@ struct PhotoDetailView: View {
     
     private func loadFullImage() {
         Task {
-            if photo.filePath.hasPrefix("photos://asset/") {
-                let identifier = String(photo.filePath.dropFirst("photos://asset/".count))
-                guard let asset = PHAsset.fetchAssets(withLocalIdentifiers: [identifier], options: nil).firstObject else { return }
-                let options = PHImageRequestOptions()
-                options.deliveryMode = .highQualityFormat
-                options.isNetworkAccessAllowed = true
-                options.isSynchronous = false
-                await withCheckedContinuation { continuation in
-                    PHImageManager.default().requestImage(
-                        for: asset,
-                        targetSize: PHImageManagerMaximumSize,
-                        contentMode: .aspectFit,
-                        options: options
-                    ) { uiImage, _ in
-                        if let uiImage = uiImage {
-                            Task { @MainActor in self.image = uiImage }
-                        }
-                        continuation.resume()
-                    }
+            if PhotoAssetHelper.isPhotosLibraryPhoto(photo) {
+                if let img = await PhotoAssetHelper.requestFullImage(for: photo) {
+                    await MainActor.run { self.image = img }
                 }
             } else {
-                if let data = try? Data(contentsOf: photo.fileURL),
+                if let url = photo.fileURL,
+                   let data = try? Data(contentsOf: url),
                    let uiImage = UIImage(data: data) {
                     await MainActor.run { self.image = uiImage }
                 }
@@ -274,8 +259,9 @@ struct FileInfoSection: View {
             MetadataRow(label: "File Name", value: photo.fileName)
             MetadataRow(label: "Size", value: formatFileSize(photo.fileSize))
             
-            if let folder = photo.folder {
-                MetadataRow(label: "Folder", value: folder.fullPath)
+            if !photo.folders.isEmpty {
+                MetadataRow(label: photo.folders.count == 1 ? "Folder" : "Folders",
+                            value: photo.folders.map(\.name).joined(separator: ", "))
             }
         }
     }

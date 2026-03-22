@@ -30,7 +30,7 @@ final class Photo {
     var hasFullMetadata: Bool
     var city: String?
     var country: String?
-    var folder: Folder?
+    var folders: [Folder]
     
     @Relationship(deleteRule: .cascade, inverse: \PhotoTag.photo)
     var photoTags: [PhotoTag]?
@@ -90,11 +90,12 @@ final class Photo {
         self.hasFullMetadata = hasFullMetadata
         self.city = city
         self.country = country
-        self.folder = folder
+        self.folders = folder.map { [$0] } ?? []
     }
     
-    var fileURL: URL {
-        URL(fileURLWithPath: filePath)
+    var fileURL: URL? {
+        guard !filePath.hasPrefix("photos://") else { return nil }
+        return URL(fileURLWithPath: filePath)
     }
     
     var location: CLLocation? {
@@ -104,6 +105,10 @@ final class Photo {
         return CLLocation(latitude: latitude, longitude: longitude)
     }
     
+    var primaryFolder: Folder? {
+        folders.first
+    }
+
     var tags: [Tag] {
         photoTags?.compactMap { $0.tag } ?? []
     }

@@ -160,7 +160,7 @@ actor IndexingService {
 
     private func enrichSinglePhoto(_ photo: Photo, rootURL: URL?) async {
         // Check if this is a Photos Library photo (path starts with "photos://")
-        if photo.filePath.hasPrefix("photos://asset/") {
+        if PhotoAssetHelper.isPhotosLibraryPhoto(photo) {
             await enrichPhotosLibraryPhoto(photo)
             return
         }
@@ -171,7 +171,7 @@ actor IndexingService {
             return
         }
         
-        let url = photo.fileURL
+        guard let url = photo.fileURL else { return }
         let accessing = rootURL.startAccessingSecurityScopedResource()
         defer { if accessing { rootURL.stopAccessingSecurityScopedResource() } }
 
@@ -219,10 +219,7 @@ actor IndexingService {
     }
     
     private func enrichPhotosLibraryPhoto(_ photo: Photo) async {
-        // Extract asset identifier from path (format: "photos://asset/{localIdentifier}")
-        let identifier = String(photo.filePath.dropFirst("photos://asset/".count))
-        
-        guard let asset = PHAsset.fetchAssets(withLocalIdentifiers: [identifier], options: nil).firstObject else {
+        guard let asset = PhotoAssetHelper.fetchAsset(for: photo) else {
             print("[\(photo.fileName)] Asset not found in Photos Library")
             return
         }

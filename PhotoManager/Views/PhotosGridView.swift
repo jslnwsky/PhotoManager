@@ -88,12 +88,10 @@ struct PhotoThumbnailView: View {
     @State private var requestID: PHImageRequestID? = nil
     
     private var borderColor: Color {
-        if photo.hasFullMetadata {
-            if !photo.keywords.isEmpty || !photo.tags.isEmpty {
-                return .green
-            } else {
-                return .yellow
-            }
+        if !photo.tags.isEmpty || !photo.keywords.isEmpty {
+            return .green
+        } else if photo.hasFullMetadata {
+            return .yellow
         } else {
             return .orange
         }

@@ -1,6 +1,7 @@
 import Foundation
 import SwiftData
 import Photos
+import UIKit
 
 @ModelActor
 actor IndexingService {
@@ -240,13 +241,37 @@ actor IndexingService {
                     return
                 }
                 
-                // Extract EXIF metadata from image data
                 Task {
+                    // Always update fields available directly from PHAsset (more reliable than EXIF)
+                    photo.captureDate = asset.creationDate
+                    photo.modificationDate = asset.modificationDate
+                    photo.width = asset.pixelWidth
+                    photo.height = asset.pixelHeight
+                    if let location = asset.location {
+                        photo.latitude = location.coordinate.latitude
+                        photo.longitude = location.coordinate.longitude
+                        photo.altitude = location.altitude
+                    }
+                    
+                    // Generate thumbnail from image data
+                    if let uiImage = UIImage(data: imageData) {
+                        let thumbSize = CGSize(width: 300, height: 300)
+                        let renderer = UIGraphicsImageRenderer(size: thumbSize)
+                        let scale = min(thumbSize.width / uiImage.size.width, thumbSize.height / uiImage.size.height)
+                        let scaledSize = CGSize(width: uiImage.size.width * scale, height: uiImage.size.height * scale)
+                        let origin = CGPoint(x: (thumbSize.width - scaledSize.width) / 2,
+                                            y: (thumbSize.height - scaledSize.height) / 2)
+                        let thumb = renderer.image { _ in
+                            uiImage.draw(in: CGRect(origin: origin, size: scaledSize))
+                        }
+                        photo.thumbnailData = thumb.jpegData(compressionQuality: 0.7)
+                    }
+                    
+                    // Extract EXIF metadata from image data
                     do {
                         let metadata = try await self.metadataExtractor.extractMetadataFromData(imageData)
                         let metadataJSON = try? JSONSerialization.data(withJSONObject: self.sanitizeForJSON(metadata.rawMetadata), options: [.prettyPrinted])
                         
-                        // Update photo with full EXIF data
                         photo.cameraMake = metadata.cameraMake
                         photo.cameraModel = metadata.cameraModel
                         photo.lensModel = metadata.lensModel
@@ -258,12 +283,12 @@ actor IndexingService {
                         photo.photoDescription = metadata.description
                         photo.keywords = metadata.keywords ?? []
                         photo.originalMetadataJSON = metadataJSON.flatMap { String(data: $0, encoding: .utf8) }
-                        photo.hasFullMetadata = true
-                        
                         print("[\(photo.fileName)] Photos Library photo enriched with full EXIF")
                     } catch {
                         print("[\(photo.fileName)] EXIF extraction failed: \(error.localizedDescription)")
                     }
+                    
+                    photo.hasFullMetadata = true
                     continuation.resume()
                 }
             }

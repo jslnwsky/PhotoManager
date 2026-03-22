@@ -1,6 +1,7 @@
 import SwiftUI
 import SwiftData
 import MapKit
+import Photos
 
 struct PhotoDetailView: View {
     @Environment(\.modelContext) private var modelContext
@@ -50,10 +51,30 @@ struct PhotoDetailView: View {
     
     private func loadFullImage() {
         Task {
-            if let data = try? Data(contentsOf: photo.fileURL),
-               let uiImage = UIImage(data: data) {
-                await MainActor.run {
-                    self.image = uiImage
+            if photo.filePath.hasPrefix("photos://asset/") {
+                let identifier = String(photo.filePath.dropFirst("photos://asset/".count))
+                guard let asset = PHAsset.fetchAssets(withLocalIdentifiers: [identifier], options: nil).firstObject else { return }
+                let options = PHImageRequestOptions()
+                options.deliveryMode = .highQualityFormat
+                options.isNetworkAccessAllowed = true
+                options.isSynchronous = false
+                await withCheckedContinuation { continuation in
+                    PHImageManager.default().requestImage(
+                        for: asset,
+                        targetSize: PHImageManagerMaximumSize,
+                        contentMode: .aspectFit,
+                        options: options
+                    ) { uiImage, _ in
+                        if let uiImage = uiImage {
+                            Task { @MainActor in self.image = uiImage }
+                        }
+                        continuation.resume()
+                    }
+                }
+            } else {
+                if let data = try? Data(contentsOf: photo.fileURL),
+                   let uiImage = UIImage(data: data) {
+                    await MainActor.run { self.image = uiImage }
                 }
             }
         }

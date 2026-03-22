@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		31CB2D1A2F6EF28500C4672D /* PhotoLibraryService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 31CB2D192F6EF28500C4672D /* PhotoLibraryService.swift */; };
+		31CB2D1C2F6F5BBE00C4672D /* GeocodingService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 31CB2D1B2F6F5BBE00C4672D /* GeocodingService.swift */; };
 		B10000001B000000000000001 /* PhotoManagerApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000001B000000000000002 /* PhotoManagerApp.swift */; };
 		B10000001B000000000000003 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000001B000000000000004 /* ContentView.swift */; };
 		B10000001B000000000000005 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = B10000001B000000000000006 /* Assets.xcassets */; };
@@ -31,6 +32,7 @@
 
 /* Begin PBXFileReference section */
 		31CB2D192F6EF28500C4672D /* PhotoLibraryService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhotoLibraryService.swift; sourceTree = "<group>"; };
+		31CB2D1B2F6F5BBE00C4672D /* GeocodingService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GeocodingService.swift; sourceTree = "<group>"; };
 		B10000001B000000000000002 /* PhotoManagerApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhotoManagerApp.swift; sourceTree = "<group>"; };
 		B10000001B000000000000004 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		B10000001B000000000000006 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
@@ -113,6 +115,7 @@
 			isa = PBXGroup;
 			children = (
 				31CB2D192F6EF28500C4672D /* PhotoLibraryService.swift */,
+				31CB2D1B2F6F5BBE00C4672D /* GeocodingService.swift */,
 				B10000001B000000000000012 /* iCloudDriveService.swift */,
 				B10000001B000000000000014 /* MetadataExtractor.swift */,
 				B10000001B000000000000016 /* IndexingService.swift */,
@@ -218,6 +221,7 @@
 				B10000001B000000000000009 /* Photo.swift in Sources */,
 				B10000001B00000000000000B /* Tag.swift in Sources */,
 				B10000001B00000000000000D /* Folder.swift in Sources */,
+				31CB2D1C2F6F5BBE00C4672D /* GeocodingService.swift in Sources */,
 				B10000001B00000000000000F /* PhotoTag.swift in Sources */,
 				31CB2D1A2F6EF28500C4672D /* PhotoLibraryService.swift in Sources */,
 				B10000001B000000000000011 /* iCloudDriveService.swift in Sources */,

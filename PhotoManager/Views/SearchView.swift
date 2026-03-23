@@ -2,13 +2,20 @@ import SwiftUI
 import SwiftData
 
 struct SearchView: View {
-    @Query private var photos: [Photo]
+    @Environment(\.modelContext) private var modelContext
     @Query(sort: \Tag.name) private var tags: [Tag]
+    @Query private var allPhotos: [Photo]
+    
+    @StateObject private var searchIndex = SearchIndexService()
 
     @State private var searchText = ""
     @State private var debouncedSearchText = ""
     @State private var showingFilters = false
     @State private var filters = SearchFilters()
+    @State private var searchResults: [Photo] = []
+    @State private var totalMatchCount: Int = 0
+    @State private var isSearching = false
+    @State private var searchTask: Task<Void, Never>?
 
     private static let maxResults = 200
 
@@ -22,20 +29,8 @@ struct SearchView: View {
         return count
     }
 
-    var searchResults: [Photo] {
-        guard !debouncedSearchText.isEmpty || activeFilterCount > 0 else { return [] }
-        var results: [Photo] = []
-        for photo in photos {
-            if matches(photo) {
-                results.append(photo)
-                if results.count >= Self.maxResults { break }
-            }
-        }
-        return results
-    }
-
     var isResultsTruncated: Bool {
-        searchResults.count >= Self.maxResults
+        totalMatchCount > Self.maxResults
     }
 
     var body: some View {
@@ -45,12 +40,34 @@ struct SearchView: View {
                     ActiveFiltersBar(filters: $filters)
                 }
 
-                if debouncedSearchText.isEmpty && activeFilterCount == 0 {
+                if searchIndex.isIndexing {
+                    VStack(spacing: 16) {
+                        ProgressView(value: searchIndex.indexProgress)
+                            .progressViewStyle(.linear)
+                            .frame(maxWidth: 200)
+                        Text("Building search index...")
+                            .font(.headline)
+                            .foregroundStyle(.secondary)
+                        Text("\(Int(searchIndex.indexProgress * 100))%")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else if debouncedSearchText.isEmpty && activeFilterCount == 0 {
                     ContentUnavailableView(
                         "Search Photos",
                         systemImage: "magnifyingglass",
                         description: Text("Type a keyword or use filters to find photos")
                     )
+                } else if isSearching {
+                    VStack(spacing: 16) {
+                        ProgressView()
+                            .scaleEffect(1.5)
+                        Text("Searching \(debouncedSearchText.isEmpty ? "photos" : "\"\(debouncedSearchText)\"")...")
+                            .font(.headline)
+                            .foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else if searchResults.isEmpty {
                     ContentUnavailableView(
                         "No Results",
@@ -59,7 +76,7 @@ struct SearchView: View {
                     )
                 } else {
                     ScrollView {
-                        Text(isResultsTruncated ? "Showing first \(Self.maxResults) results" : "\(searchResults.count) photos")
+                        Text(isResultsTruncated ? "Showing first \(Self.maxResults) of \(totalMatchCount) photos" : "\(searchResults.count) photos")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .frame(maxWidth: .infinity, alignment: .leading)
@@ -79,15 +96,27 @@ struct SearchView: View {
                     }
                 }
             }
+            .task {
+                // Build index on first appear
+                if searchIndex.needsRebuild(photoCount: allPhotos.count) {
+                    await searchIndex.buildIndex(modelContext: modelContext)
+                }
+            }
             .navigationTitle("Search")
             .searchable(text: $searchText, prompt: "Keyword, filename, description…")
             .onChange(of: searchText) { _, newValue in
-                // Debounce: update debouncedSearchText after 300ms of no typing
+                // Debounce: update debouncedSearchText after 500ms of no typing
                 let captured = newValue
                 Task {
-                    try? await Task.sleep(nanoseconds: 300_000_000)
-                    if searchText == captured { debouncedSearchText = captured }
+                    try? await Task.sleep(nanoseconds: 500_000_000)
+                    if searchText == captured { 
+                        debouncedSearchText = captured
+                        performSearch()
+                    }
                 }
+            }
+            .onChange(of: filters) { _, _ in
+                performSearch()
             }
             .toolbar {
                 ToolbarItem(placement: .primaryAction) {
@@ -106,63 +135,72 @@ struct SearchView: View {
         }
     }
 
-    private func matches(_ photo: Photo) -> Bool {
-        // Keyword search across multiple fields
-        if !debouncedSearchText.isEmpty {
-            let q = debouncedSearchText.lowercased()
-            let textMatch = photo.fileName.lowercased().contains(q)
-                || photo.photoDescription?.lowercased().contains(q) == true
-                || photo.keywords.contains(where: { $0.lowercased().contains(q) })
-                || photo.cameraMake?.lowercased().contains(q) == true
-                || photo.cameraModel?.lowercased().contains(q) == true
-                || photo.city?.lowercased().contains(q) == true
-                || photo.country?.lowercased().contains(q) == true
-                || photo.tags.contains(where: { $0.name.lowercased().contains(q) })
-            if !textMatch { return false }
+    private func performSearch() {
+        // Cancel any existing search
+        searchTask?.cancel()
+        
+        guard !debouncedSearchText.isEmpty || activeFilterCount > 0 else {
+            searchResults = []
+            totalMatchCount = 0
+            isSearching = false
+            return
         }
-
-        // Date range filter
-        if filters.dateRange != .all {
-            guard let date = photo.captureDate, filters.dateRange.contains(date) else { return false }
+        
+        isSearching = true
+        
+        // Capture current filter state
+        let currentFilters = filters
+        let currentSearchText = debouncedSearchText
+        
+        searchTask = Task {
+            let startTime = Date()
+            
+            // Search the index (fast - milliseconds)
+            let (matchingIDs, totalMatches) = searchIndex.search(
+                query: currentSearchText,
+                locationQuery: currentFilters.locationQuery,
+                cameraQuery: currentFilters.cameraQuery,
+                dateRange: currentFilters.dateRange,
+                source: currentFilters.source,
+                selectedTagNames: Set(currentFilters.selectedTags.map { $0.name }),
+                maxResults: Self.maxResults
+            )
+            
+            // Check if task was cancelled
+            guard !Task.isCancelled else {
+                await MainActor.run {
+                    isSearching = false
+                }
+                return
+            }
+            
+            // Fetch only the matching photos by ID (fast - only fetches what we need)
+            let fetchStart = Date()
+            var results: [Photo] = []
+            
+            for id in matchingIDs {
+                if let photo = modelContext.model(for: id) as? Photo {
+                    results.append(photo)
+                }
+            }
+            
+            print("📊 Fetched \(results.count) matching photos in \(Date().timeIntervalSince(fetchStart))s")
+            print("📊 Total search time: \(Date().timeIntervalSince(startTime))s")
+            
+            // Update UI on main thread
+            await MainActor.run {
+                searchResults = results
+                totalMatchCount = totalMatches
+                isSearching = false
+            }
         }
-
-        // Location filter
-        if !filters.locationQuery.isEmpty {
-            let lq = filters.locationQuery.lowercased()
-            let locationMatch = photo.city?.lowercased().contains(lq) == true
-                || photo.country?.lowercased().contains(lq) == true
-            if !locationMatch { return false }
-        }
-
-        // Camera filter
-        if !filters.cameraQuery.isEmpty {
-            let cq = filters.cameraQuery.lowercased()
-            let cameraMatch = photo.cameraMake?.lowercased().contains(cq) == true
-                || photo.cameraModel?.lowercased().contains(cq) == true
-                || photo.lensModel?.lowercased().contains(cq) == true
-            if !cameraMatch { return false }
-        }
-
-        // Source filter
-        if filters.source != .all {
-            let isPhotosLibrary = PhotoAssetHelper.isPhotosLibraryPhoto(photo)
-            if filters.source == .photosLibrary && !isPhotosLibrary { return false }
-            if filters.source == .iCloudDrive && isPhotosLibrary { return false }
-        }
-
-        // Tag filter
-        if !filters.selectedTags.isEmpty {
-            let photoTags = Set(photo.tags)
-            if photoTags.isDisjoint(with: filters.selectedTags) { return false }
-        }
-
-        return true
     }
+    
 }
 
 // MARK: - Filters Model
 
-struct SearchFilters {
+struct SearchFilters: Equatable {
     var dateRange: DateRange = .all
     var locationQuery: String = ""
     var cameraQuery: String = ""

@@ -4,11 +4,15 @@ import SwiftData
 /// Lightweight search index for fast photo searching without loading full Photo objects
 @MainActor
 class SearchIndexService: ObservableObject {
+    static let shared = SearchIndexService()
+    
     @Published private(set) var isIndexing = false
     @Published private(set) var indexProgress: Double = 0.0
     
     private var searchIndex: [PhotoSearchRecord] = []
     private var lastIndexUpdate: Date?
+    
+    private init() {} // Singleton
     
     struct PhotoSearchRecord: Identifiable {
         let id: PersistentIdentifier
@@ -238,6 +242,13 @@ class SearchIndexService: ObservableObject {
         return (matchingIDs, totalCount)
     }
     
+    /// Set the search index from external source (e.g., IndexingService during scan)
+    func setIndex(_ records: [PhotoSearchRecord]) {
+        searchIndex = records
+        lastIndexUpdate = Date()
+        print("🔍 Search index set with \(records.count) records")
+    }
+    
     /// Check if index needs rebuilding
     func needsRebuild(photoCount: Int) -> Bool {
         guard let lastUpdate = lastIndexUpdate else { return true }
@@ -249,5 +260,10 @@ class SearchIndexService: ObservableObject {
         
         // Rebuild if index is older than 1 hour
         return Date().timeIntervalSince(lastUpdate) > 3600
+    }
+    
+    /// Check if index is ready
+    var isIndexReady: Bool {
+        !searchIndex.isEmpty
     }
 }

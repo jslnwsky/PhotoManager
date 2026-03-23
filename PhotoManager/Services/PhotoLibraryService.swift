@@ -5,6 +5,8 @@ import UIKit
 
 @ModelActor
 actor PhotoLibraryService {
+    private var searchIndexRecords: [SearchIndexService.PhotoSearchRecord] = []
+    
     func scanPhotosLibrary() async throws -> (photoCount: Int, albumCount: Int) {
         print("📸 Starting Photos Library scan...")
         
@@ -77,7 +79,21 @@ actor PhotoLibraryService {
         
         print("🎉 Photos Library scan complete: \(photoCount) photos in \(albumCount) albums")
         
+        // Save search index records
+        await saveSearchIndex()
+        
         return (photoCount, albumCount)
+    }
+    
+    private func saveSearchIndex() async {
+        guard !searchIndexRecords.isEmpty else { return }
+        
+        let startTime = Date()
+        print("🔍 Saving search index with \(searchIndexRecords.count) records...")
+        
+        await SearchIndexService.shared.setIndex(searchIndexRecords)
+        
+        print("🔍 Search index saved in \(Date().timeIntervalSince(startTime))s")
     }
     
     private func processAlbums(_ albums: PHFetchResult<PHAssetCollection>, rootFolder: Folder, skipRecents: Bool = false) async -> (albumCount: Int, photoCount: Int) {
@@ -175,10 +191,32 @@ actor PhotoLibraryService {
             photo.hasFullMetadata = false
             
             self.modelContext.insert(photo)
+            
+            // Build search index record
+            self.addSearchIndexRecord(for: photo)
+            
             count += 1
         }
         
         return count
+    }
+    
+    private func addSearchIndexRecord(for photo: Photo) {
+        let record = SearchIndexService.PhotoSearchRecord(
+            id: photo.persistentModelID,
+            fileName: photo.fileName,
+            description: photo.photoDescription,
+            keywords: photo.keywords,
+            cameraMake: photo.cameraMake,
+            cameraModel: photo.cameraModel,
+            lensModel: photo.lensModel,
+            city: photo.city,
+            country: photo.country,
+            captureDate: photo.captureDate,
+            filePath: photo.filePath,
+            tagNames: [] // Tags will be empty during initial scan
+        )
+        searchIndexRecords.append(record)
     }
     
     private func getAssetFileName(_ asset: PHAsset) -> String {

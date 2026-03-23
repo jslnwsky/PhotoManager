@@ -7,6 +7,7 @@ import UIKit
 actor IndexingService {
     private let iCloudService = iCloudDriveService()
     private let metadataExtractor = MetadataExtractor()
+    private var searchIndexRecords: [SearchIndexService.PhotoSearchRecord] = []
     
     func startIndexing(rootURL: URL, progressHandler: @escaping (Double) -> Void) async -> String? {
         do {
@@ -46,14 +47,29 @@ actor IndexingService {
             }
             
             try? modelContext.save()
+            
+            // Save search index records
+            await saveSearchIndex()
+            
             progressHandler(1.0)
-            print("✅ Indexing complete: \(photosProcessed) photos indexed")
+            print("✅ Indexing complete: \(photosProcessed) photos indexed, \(searchIndexRecords.count) search records built")
             return nil
             
         } catch {
             print("❌ Indexing error: \(error.localizedDescription)")
             return error.localizedDescription
         }
+    }
+    
+    private func saveSearchIndex() async {
+        guard !searchIndexRecords.isEmpty else { return }
+        
+        let startTime = Date()
+        print("🔍 Saving search index with \(searchIndexRecords.count) records...")
+        
+        await SearchIndexService.shared.setIndex(searchIndexRecords)
+        
+        print("🔍 Search index saved in \(Date().timeIntervalSince(startTime))s")
     }
     
     private func createFolderHierarchy(from nodes: [FolderNode], parent: Folder) async {
@@ -119,6 +135,9 @@ actor IndexingService {
                 folder: folder
             )
             modelContext.insert(photo)
+            
+            // Build search index record
+            addSearchIndexRecord(for: photo)
         } catch {
             print("Cloud-only photo, indexing with partial data: \(url.lastPathComponent)")
             let photo = Photo(
@@ -130,7 +149,28 @@ actor IndexingService {
                 folder: folder
             )
             modelContext.insert(photo)
+            
+            // Build search index record (with limited data)
+            addSearchIndexRecord(for: photo)
         }
+    }
+    
+    private func addSearchIndexRecord(for photo: Photo) {
+        let record = SearchIndexService.PhotoSearchRecord(
+            id: photo.persistentModelID,
+            fileName: photo.fileName,
+            description: photo.photoDescription,
+            keywords: photo.keywords,
+            cameraMake: photo.cameraMake,
+            cameraModel: photo.cameraModel,
+            lensModel: photo.lensModel,
+            city: photo.city,
+            country: photo.country,
+            captureDate: photo.captureDate,
+            filePath: photo.filePath,
+            tagNames: [] // Tags will be empty during initial scan
+        )
+        searchIndexRecords.append(record)
     }
 
     func enrichMetadata(rootURL: URL?, progressHandler: @escaping (Double) -> Void) async -> String? {

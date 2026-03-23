@@ -4,9 +4,8 @@ import SwiftData
 struct SearchView: View {
     @Environment(\.modelContext) private var modelContext
     @Query(sort: \Tag.name) private var tags: [Tag]
-    @Query private var allPhotos: [Photo]
     
-    @StateObject private var searchIndex = SearchIndexService()
+    @ObservedObject private var searchIndex = SearchIndexService.shared
 
     @State private var searchText = ""
     @State private var debouncedSearchText = ""
@@ -40,19 +39,12 @@ struct SearchView: View {
                     ActiveFiltersBar(filters: $filters)
                 }
 
-                if searchIndex.isIndexing {
-                    VStack(spacing: 16) {
-                        ProgressView(value: searchIndex.indexProgress)
-                            .progressViewStyle(.linear)
-                            .frame(maxWidth: 200)
-                        Text("Building search index...")
-                            .font(.headline)
-                            .foregroundStyle(.secondary)
-                        Text("\(Int(searchIndex.indexProgress * 100))%")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                if !searchIndex.isIndexReady {
+                    ContentUnavailableView(
+                        "Search Index Not Ready",
+                        systemImage: "magnifyingglass.circle",
+                        description: Text("Search index will be built during the next photo scan")
+                    )
                 } else if debouncedSearchText.isEmpty && activeFilterCount == 0 {
                     ContentUnavailableView(
                         "Search Photos",
@@ -94,12 +86,6 @@ struct SearchView: View {
                         }
                         .padding()
                     }
-                }
-            }
-            .task {
-                // Build index on first appear
-                if searchIndex.needsRebuild(photoCount: allPhotos.count) {
-                    await searchIndex.buildIndex(modelContext: modelContext)
                 }
             }
             .navigationTitle("Search")

@@ -13,8 +13,9 @@ struct FoldersView: View {
         folders.filter { $0.parentFolder == nil && $0.source == .iCloudDrive }
     }
 
-    var photoLibraryFolders: [Folder] {
-        folders.filter { $0.parentFolder != nil && $0.source == .localPhotos }
+    var photoLibraryRootFolders: [Folder] {
+        // Get top-level Photos Library folders (albums that are direct children of root)
+        folders.filter { $0.parentFolder != nil && $0.parentFolder?.parentFolder == nil && $0.source == .localPhotos }
     }
 
     var virtualFolders: [Folder] {
@@ -46,7 +47,8 @@ struct FoldersView: View {
                     }
                 }
 
-                Section("iCloud Drive") {
+                // iCloud Drive - collapsible top-level group
+                DisclosureGroup {
                     if vm.storedRootURL == nil {
                         VStack(alignment: .leading, spacing: 6) {
                             Text("No iCloud Drive folder selected").foregroundStyle(.secondary)
@@ -63,28 +65,76 @@ struct FoldersView: View {
                         .padding(.vertical, 4)
                     } else {
                         ForEach(iCloudFolders.sorted { $0.name < $1.name }) { folder in
-                            FolderRowView(folder: folder)
+                            HierarchicalFolderRow(folder: folder)
+                        }
+                    }
+                } label: {
+                    HStack {
+                        Image(systemName: "icloud.fill")
+                            .foregroundColor(.blue)
+                        Text("iCloud Drive")
+                            .font(.headline)
+                        Spacer()
+                        if !iCloudFolders.isEmpty {
+                            Text("\(iCloudFolders.count) folders")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
                         }
                     }
                 }
 
-                Section("Photos Library") {
-                    if photoLibraryFolders.isEmpty && !vm.isScanningPhotos {
+                // Photos Library - collapsible top-level group
+                DisclosureGroup {
+                    if photoLibraryRootFolders.isEmpty && !vm.isScanningPhotos {
                         VStack(alignment: .leading, spacing: 6) {
                             Text("No albums indexed yet").foregroundStyle(.secondary)
                             Button("Scan Photos Library") { vm.startPhotoLibraryScan(container: modelContext.container) }
                         }
                         .padding(.vertical, 4)
                     } else {
-                        ForEach(photoLibraryFolders.sorted { $0.name < $1.name }) { folder in
-                            FolderRowView(folder: folder)
+                        ForEach(photoLibraryRootFolders.sorted { $0.name < $1.name }) { folder in
+                            HierarchicalFolderRow(folder: folder)
+                        }
+                    }
+                } label: {
+                    HStack {
+                        Image(systemName: "photo.on.rectangle")
+                            .foregroundColor(.green)
+                        Text("Photos Library")
+                            .font(.headline)
+                        Spacer()
+                        if !photoLibraryRootFolders.isEmpty {
+                            Text("\(photoLibraryRootFolders.count) albums")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
                         }
                     }
                 }
 
-                Section("Virtual Folders") {
-                    ForEach(virtualFolders.sorted { $0.name < $1.name }) { folder in
-                        FolderRowView(folder: folder)
+                // Virtual Folders - collapsible top-level group
+                DisclosureGroup {
+                    if virtualFolders.isEmpty {
+                        Text("No virtual folders yet")
+                            .foregroundStyle(.secondary)
+                            .font(.caption)
+                            .padding(.vertical, 4)
+                    } else {
+                        ForEach(virtualFolders.sorted { $0.name < $1.name }) { folder in
+                            FolderRowView(folder: folder)
+                        }
+                    }
+                } label: {
+                    HStack {
+                        Image(systemName: "folder.badge.person.crop")
+                            .foregroundColor(.purple)
+                        Text("Virtual Folders")
+                            .font(.headline)
+                        Spacer()
+                        if !virtualFolders.isEmpty {
+                            Text("\(virtualFolders.count) folders")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
                     }
                 }
             }
@@ -154,13 +204,36 @@ private struct ProgressSection: View {
     }
 }
 
+struct HierarchicalFolderRow: View {
+    let folder: Folder
+    @State private var isExpanded = false
+    
+    var body: some View {
+        if folder.childFolders.isEmpty {
+            FolderRowView(folder: folder)
+        } else {
+            DisclosureGroup(isExpanded: $isExpanded) {
+                ForEach(folder.childFolders.sorted { $0.name < $1.name }) { child in
+                    HierarchicalFolderRow(folder: child)
+                }
+            } label: {
+                FolderRowView(folder: folder)
+            }
+        }
+    }
+}
+
 struct FolderRowView: View {
     let folder: Folder
+    
+    private var hasChildren: Bool {
+        !folder.childFolders.isEmpty
+    }
     
     private var iconName: String {
         switch folder.source {
         case .iCloudDrive:
-            return "folder.fill"
+            return hasChildren ? "folder.fill.badge.gearshape" : "folder.fill"
         case .localPhotos:
             return "photo.on.rectangle"
         case .virtual:
@@ -192,9 +265,18 @@ struct FolderRowView: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(folder.name)
                         .font(.body)
-                    Text("\(folder.photoCount) photos")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
+                    
+                    HStack(spacing: 4) {
+                        Text("\(folder.photoCount) photos")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                        
+                        if hasChildren {
+                            Text("• \(folder.childFolders.count) subfolders")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                    }
                 }
             }
         }

@@ -49,6 +49,49 @@ actor iCloudDriveService {
         return photoFiles
     }
     
+    // New streaming version that yields photos as they're found
+    func streamPhotos(in rootURL: URL, photoHandler: @escaping (URL, String) async -> Void, progressHandler: @escaping (Int) -> Void) async throws {
+        guard fileManager.fileExists(atPath: rootURL.path) else {
+            throw iCloudError.rootNotFound
+        }
+
+        let enumerator = fileManager.enumerator(
+            at: rootURL,
+            includingPropertiesForKeys: [.isRegularFileKey, .nameKey],
+            options: [.skipsHiddenFiles]
+        )
+
+        guard let enumerator = enumerator else {
+            throw iCloudError.enumerationFailed
+        }
+
+        var photosFound = 0
+
+        while let fileURL = enumerator.nextObject() as? URL {
+            guard let resourceValues = try? fileURL.resourceValues(forKeys: [.isRegularFileKey]),
+                  resourceValues.isRegularFile == true else { continue }
+
+            let fileExtension = fileURL.pathExtension.lowercased()
+            if supportedImageExtensions.contains(fileExtension) {
+                let relativePath = fileURL.path.replacingOccurrences(of: rootURL.path + "/", with: "")
+                let folderPath = (relativePath as NSString).deletingLastPathComponent
+                
+                photosFound += 1
+                
+                // Process photo immediately as it's found
+                await photoHandler(fileURL, folderPath)
+                
+                // Report progress every 10 photos
+                if photosFound % 10 == 0 {
+                    progressHandler(photosFound)
+                }
+            }
+        }
+        
+        // Final progress update
+        progressHandler(photosFound)
+    }
+    
     private func downloadIfNeeded(url: URL) async throws {
         var isDownloaded = false
         

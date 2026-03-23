@@ -21,42 +21,37 @@ actor IndexingService {
             )
             modelContext.insert(rootFolder)
 
-            // Skip pre-building folder tree to avoid hanging on large directories
-            // Folders will be created on-demand during photo processing
-            // let folderStructure = try await iCloudService.getFolderStructure(in: rootURL)
-            // await createFolderHierarchy(from: folderStructure, parent: rootFolder)
+            progressHandler(0.05)
 
-            progressHandler(0.1)
-
-            var discoveredPhotos: [(url: URL, folderPath: String)] = []
-
-            discoveredPhotos = try await iCloudService.discoverPhotos(in: rootURL) { processed, total in
-                let progress = 0.1 + (Double(processed) / Double(total)) * 0.3
-                progressHandler(progress)
-            }
+            var photosProcessed = 0
             
-            progressHandler(0.4)
-            
-            let totalPhotos = discoveredPhotos.count
-            var processedPhotos = 0
-            
-            for (photoURL, folderPath) in discoveredPhotos {
-                await processPhoto(url: photoURL, folderPath: folderPath)
-                processedPhotos += 1
+            // Stream photos as they're discovered - process immediately
+            try await iCloudService.streamPhotos(in: rootURL) { photoURL, folderPath in
+                await self.processPhoto(url: photoURL, folderPath: folderPath)
+                photosProcessed += 1
                 
-                if processedPhotos % 10 == 0 || processedPhotos == totalPhotos {
-                    let progress = 0.4 + (Double(processedPhotos) / Double(totalPhotos)) * 0.6
-                    progressHandler(progress)
+                // Save periodically to make photos visible in UI
+                if photosProcessed % 50 == 0 {
+                    try? await self.modelContext.save()
+                }
+            } progressHandler: { photosFound in
+                // Progress updates continuously as photos are found
+                // Using logarithmic scale so progress moves faster initially
+                let progress = min(0.95, 0.05 + (log(Double(photosFound + 1)) / 10.0))
+                progressHandler(progress)
+                
+                if photosFound % 100 == 0 {
+                    print("📸 Found \(photosFound) photos so far...")
                 }
             }
             
             try? modelContext.save()
             progressHandler(1.0)
-            print("Indexing complete: \(totalPhotos) photos indexed")
+            print("✅ Indexing complete: \(photosProcessed) photos indexed")
             return nil
             
         } catch {
-            print("Indexing error: \(error.localizedDescription)")
+            print("❌ Indexing error: \(error.localizedDescription)")
             return error.localizedDescription
         }
     }

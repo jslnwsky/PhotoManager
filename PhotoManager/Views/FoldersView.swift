@@ -3,11 +3,20 @@ import SwiftData
 import UniformTypeIdentifiers
 
 struct FoldersView: View {
+    private enum FolderPickerAction {
+        case scan
+        case backup
+        case restore
+    }
+
     @Environment(\.modelContext) private var modelContext
     @Query(sort: \Folder.name) private var folders: [Folder]
-    @State private var vm = FoldersViewModel()
+    @Environment(FoldersViewModel.self) private var vm
     @State private var showingAddFolder = false
     @State private var showingFolderPicker = false
+    @State private var activeFolderPicker: FolderPickerAction?
+    @State private var pendingRestoreFolderURL: URL?
+    @State private var showingRestoreConfirmation = false
 
     var iCloudFolders: [Folder] {
         folders.filter { $0.parentFolder == nil && $0.source == .iCloudDrive }
@@ -38,12 +47,104 @@ struct FoldersView: View {
                 if vm.isGeocoding {
                     ProgressSection(value: vm.geocodeProgress, label: vm.geocodeStatus.isEmpty ? "Geocoding locations…" : "Geocoding: \(vm.geocodeStatus)")
                 }
+                if vm.isRecalculatingFileSizes {
+                    ProgressSection(
+                        value: vm.fileSizeRecalcProgress,
+                        label: vm.fileSizeRecalcStatus.isEmpty ? "Recalculating Photos file sizes..." : "\(vm.fileSizeRecalcStatus) \(Int(vm.fileSizeRecalcProgress * 100))%"
+                    )
+                }
+                if vm.isBackingUp {
+                    Section {
+                        VStack(spacing: 8) {
+                            ProgressView()
+                            Text(vm.backupStatus.isEmpty ? "Creating backup..." : vm.backupStatus)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        .padding(.vertical, 4)
+                    }
+                }
+                if vm.isRestoring {
+                    Section {
+                        VStack(spacing: 8) {
+                            ProgressView()
+                            Text(vm.restoreStatus.isEmpty ? "Restoring backup..." : vm.restoreStatus)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        .padding(.vertical, 4)
+                    }
+                }
 
                 // Error sections
-                ForEach([vm.scanError, vm.enrichError, vm.photoScanError, vm.geocodeError].compactMap({ $0 }), id: \.self) { error in
+                ForEach([vm.scanError, vm.enrichError, vm.photoScanError, vm.geocodeError, vm.fileSizeRecalcError, vm.backupError, vm.restoreError].compactMap({ $0 }), id: \.self) { error in
                     Section {
                         Label(error, systemImage: "exclamationmark.triangle")
                             .foregroundStyle(.red).font(.caption)
+                    }
+                }
+
+                if !vm.fileSizeRecalcStatus.isEmpty && !vm.isRecalculatingFileSizes {
+                    Section {
+                        Label(vm.fileSizeRecalcStatus, systemImage: "checkmark.circle")
+                            .foregroundStyle(.green)
+                            .font(.caption)
+                    }
+                }
+
+                if !vm.backupStatus.isEmpty && !vm.isBackingUp {
+                    Section {
+                        Label(vm.backupStatus, systemImage: "checkmark.circle")
+                            .foregroundStyle(.green)
+                            .font(.caption)
+                    }
+                }
+
+                if !vm.restoreStatus.isEmpty && !vm.isRestoring {
+                    Section {
+                        Label(vm.restoreStatus, systemImage: "checkmark.circle")
+                            .foregroundStyle(.green)
+                            .font(.caption)
+                    }
+                }
+
+                if vm.hasPendingRestoreAcceptance {
+                    Section("Restore Decision") {
+                        Button {
+                            vm.acceptRestore(container: modelContext.container)
+                        } label: {
+                            Label("Accept Restore", systemImage: "checkmark.seal")
+                        }
+
+                        Button(role: .destructive) {
+                            vm.rollbackRestore(container: modelContext.container)
+                        } label: {
+                            Label("Rollback", systemImage: "arrow.uturn.backward")
+                        }
+                    }
+                }
+                
+                if vm.isEnrichmentRunning {
+                    Section {
+                        HStack(spacing: 10) {
+                            ProgressView()
+                                .controlSize(.small)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(vm.enrichmentPhase.rawValue)
+                                    .font(.caption)
+                                    .fontWeight(.medium)
+                                if vm.enrichmentProgress > 0 {
+                                    ProgressView(value: vm.enrichmentProgress)
+                                        .progressViewStyle(.linear)
+                                }
+                                if !vm.enrichmentDetail.isEmpty && vm.enrichmentDetail != vm.enrichmentPhase.rawValue {
+                                    Text(vm.enrichmentDetail)
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                        }
+                        .padding(.vertical, 4)
                     }
                 }
 
@@ -52,7 +153,10 @@ struct FoldersView: View {
                     if vm.storedRootURL == nil {
                         VStack(alignment: .leading, spacing: 6) {
                             Text("No iCloud Drive folder selected").foregroundStyle(.secondary)
-                            Button("Select iCloud Drive Folder") { showingFolderPicker = true }
+                            Button("Select iCloud Drive Folder") {
+                                activeFolderPicker = .scan
+                                showingFolderPicker = true
+                            }
                         }
                         .padding(.vertical, 4)
                     } else if iCloudFolders.isEmpty && !vm.isScanning {
@@ -150,14 +254,20 @@ struct FoldersView: View {
                         Menu {
                             Button {
                                 if let url = vm.storedRootURL { vm.startScan(rootURL: url, container: modelContext.container) }
-                                else { showingFolderPicker = true }
+                                else {
+                                    activeFolderPicker = .scan
+                                    showingFolderPicker = true
+                                }
                             } label: {
                                 Label("Scan iCloud Drive", systemImage: "arrow.clockwise")
                             }
                             Button { vm.startPhotoLibraryScan(container: modelContext.container) } label: {
                                 Label("Scan Photos Library", systemImage: "photo.on.rectangle")
                             }
-                            Button { showingFolderPicker = true } label: {
+                            Button {
+                                activeFolderPicker = .scan
+                                showingFolderPicker = true
+                            } label: {
                                 Label("Change Folder", systemImage: "folder")
                             }
                             Button { vm.startEnrich(rootURL: vm.storedRootURL, container: modelContext.container) } label: {
@@ -165,6 +275,22 @@ struct FoldersView: View {
                             }
                             Button { vm.startGeocoding(container: modelContext.container) } label: {
                                 Label("Geocode Locations", systemImage: "mappin.and.ellipse")
+                            }
+                            Button { vm.startRecalculatePhotosLibraryFileSizes(container: modelContext.container) } label: {
+                                Label("Recalculate File Sizes", systemImage: "externaldrive.fill.badge.person.crop")
+                            }
+                            Divider()
+                            Button {
+                                activeFolderPicker = .backup
+                                showingFolderPicker = true
+                            } label: {
+                                Label("Backup Data", systemImage: "externaldrive.badge.plus")
+                            }
+                            Button(role: .destructive) {
+                                activeFolderPicker = .restore
+                                showingFolderPicker = true
+                            } label: {
+                                Label("Restore Backup", systemImage: "arrow.counterclockwise.circle")
                             }
                         } label: {
                             Image(systemName: "ellipsis.circle")
@@ -180,11 +306,37 @@ struct FoldersView: View {
                 allowedContentTypes: [.folder],
                 allowsMultipleSelection: false
             ) { result in
+                showingFolderPicker = false
                 guard let url = try? result.get().first else { return }
-                let accessing = url.startAccessingSecurityScopedResource()
-                vm.saveBookmark(for: url)
-                vm.startScan(rootURL: url, container: modelContext.container)
-                if accessing { url.stopAccessingSecurityScopedResource() }
+                let action = activeFolderPicker
+                activeFolderPicker = nil
+
+                switch action {
+                case .scan:
+                    let accessing = url.startAccessingSecurityScopedResource()
+                    vm.saveBookmark(for: url)
+                    vm.startScan(rootURL: url, container: modelContext.container)
+                    if accessing { url.stopAccessingSecurityScopedResource() }
+                case .backup:
+                    vm.startBackup(destinationFolderURL: url, container: modelContext.container)
+                case .restore:
+                    pendingRestoreFolderURL = url
+                    showingRestoreConfirmation = true
+                case .none:
+                    break
+                }
+            }
+            .alert("Restore backup?", isPresented: $showingRestoreConfirmation) {
+                Button("Cancel", role: .cancel) {
+                    pendingRestoreFolderURL = nil
+                }
+                Button("Restore", role: .destructive) {
+                    guard let url = pendingRestoreFolderURL else { return }
+                    vm.startRestore(backupFolderURL: url, container: modelContext.container)
+                    pendingRestoreFolderURL = nil
+                }
+            } message: {
+                Text("This will fully replace all current app data.")
             }
         }
     }

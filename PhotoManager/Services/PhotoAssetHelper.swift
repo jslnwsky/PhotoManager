@@ -28,19 +28,32 @@ enum PhotoAssetHelper {
         completion: @escaping (UIImage?) -> Void
     ) -> PHImageRequestID? {
         guard let asset = fetchAsset(for: photo) else {
+            print("⚠️ Failed to fetch asset for photo: \(photo.fileName)")
             completion(nil)
             return nil
         }
+        
+        // Check if asset has valid dimensions
+        if asset.pixelWidth == 0 || asset.pixelHeight == 0 {
+            completion(nil)
+            return nil
+        }
+        
         let options = PHImageRequestOptions()
         options.deliveryMode = deliveryMode
         options.isNetworkAccessAllowed = networkAccess
-        options.resizeMode = .exact
+        options.resizeMode = .fast
+        options.isSynchronous = false
+        
+        // Use smaller target size for thumbnails to reduce memory usage
         return PHImageManager.default().requestImage(
             for: asset,
-            targetSize: size,
+            targetSize: CGSize(width: 300, height: 300),
             contentMode: .aspectFill,
             options: options,
-            resultHandler: { image, _ in completion(image) }
+            resultHandler: { image, _ in
+                completion(image)
+            }
         )
     }
 
@@ -51,12 +64,15 @@ enum PhotoAssetHelper {
         options.isNetworkAccessAllowed = true
         options.isSynchronous = false
         return await withCheckedContinuation { continuation in
+            var hasResumed = false
             PHImageManager.default().requestImage(
                 for: asset,
                 targetSize: PHImageManagerMaximumSize,
                 contentMode: .aspectFit,
                 options: options
             ) { image, _ in
+                guard !hasResumed else { return }
+                hasResumed = true
                 continuation.resume(returning: image)
             }
         }

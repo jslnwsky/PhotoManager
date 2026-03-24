@@ -26,7 +26,6 @@ final class Photo {
     var photoDescription: String?
     var keywords: [String]
     var originalMetadataJSON: String?
-    var thumbnailData: Data?
     var hasFullMetadata: Bool
     var city: String?
     var country: String?
@@ -58,7 +57,6 @@ final class Photo {
         photoDescription: String? = nil,
         keywords: [String] = [],
         originalMetadataJSON: String? = nil,
-        thumbnailData: Data? = nil,
         hasFullMetadata: Bool = false,
         city: String? = nil,
         country: String? = nil,
@@ -86,7 +84,6 @@ final class Photo {
         self.photoDescription = photoDescription
         self.keywords = keywords
         self.originalMetadataJSON = originalMetadataJSON
-        self.thumbnailData = thumbnailData
         self.hasFullMetadata = hasFullMetadata
         self.city = city
         self.country = country
@@ -111,5 +108,16 @@ final class Photo {
 
     var tags: [Tag] {
         photoTags?.compactMap { $0.tag } ?? []
+    }
+}
+
+@Model
+final class PhotoThumbnail {
+    @Attribute(.unique) var photoFilePath: String
+    var imageData: Data
+    
+    init(photoFilePath: String, imageData: Data) {
+        self.photoFilePath = photoFilePath
+        self.imageData = imageData
     }
 }

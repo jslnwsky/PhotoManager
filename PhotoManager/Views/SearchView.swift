@@ -35,11 +35,26 @@ struct SearchView: View {
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
+                EnrichmentBannerView()
+                
                 if activeFilterCount > 0 {
                     ActiveFiltersBar(filters: $filters)
                 }
 
-                if !searchIndex.isIndexReady {
+                if searchIndex.isIndexing {
+                    VStack(spacing: 16) {
+                        ProgressView(value: searchIndex.indexProgress)
+                            .progressViewStyle(.linear)
+                            .frame(maxWidth: 200)
+                        Text("Building search index...")
+                            .font(.headline)
+                            .foregroundStyle(.secondary)
+                        Text("\(Int(searchIndex.indexProgress * 100))%")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else if !searchIndex.isIndexReady {
                     ContentUnavailableView(
                         "Search Index Not Ready",
                         systemImage: "magnifyingglass.circle",
@@ -86,6 +101,12 @@ struct SearchView: View {
                         }
                         .padding()
                     }
+                }
+            }
+            .task {
+                // Auto-rebuild index from existing photos if not ready
+                if !searchIndex.isIndexReady && !searchIndex.isIndexing {
+                    await searchIndex.buildIndex(modelContext: modelContext)
                 }
             }
             .navigationTitle("Search")

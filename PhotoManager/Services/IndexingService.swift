@@ -7,7 +7,6 @@ import UIKit
 actor IndexingService {
     private let iCloudService = iCloudDriveService()
     private let metadataExtractor = MetadataExtractor()
-    private var searchIndexRecords: [SearchIndexService.PhotoSearchRecord] = []
     
     func startIndexing(rootURL: URL, progressHandler: @escaping (Double) -> Void) async -> String? {
         do {
@@ -48,11 +47,8 @@ actor IndexingService {
             
             try? modelContext.save()
             
-            // Save search index records
-            await saveSearchIndex()
-            
             progressHandler(1.0)
-            print("✅ Indexing complete: \(photosProcessed) photos indexed, \(searchIndexRecords.count) search records built")
+            print("✅ Indexing complete: \(photosProcessed) photos indexed")
             return nil
             
         } catch {
@@ -60,16 +56,40 @@ actor IndexingService {
             return error.localizedDescription
         }
     }
-    
-    private func saveSearchIndex() async {
-        guard !searchIndexRecords.isEmpty else { return }
-        
-        let startTime = Date()
-        print("🔍 Saving search index with \(searchIndexRecords.count) records...")
-        
-        await SearchIndexService.shared.setIndex(searchIndexRecords)
-        
-        print("🔍 Search index saved in \(Date().timeIntervalSince(startTime))s")
+
+    func recalculatePhotosLibraryFileSizes(progressHandler: @escaping (Double) -> Void) async -> (updated: Int, total: Int, error: String?) {
+        do {
+            let allPhotos = try modelContext.fetch(FetchDescriptor<Photo>())
+            let photosLibraryPhotos = allPhotos.filter { PhotoAssetHelper.isPhotosLibraryPhoto($0) }
+            guard !photosLibraryPhotos.isEmpty else {
+                progressHandler(1.0)
+                return (0, 0, nil)
+            }
+
+            let total = photosLibraryPhotos.count
+            var updatedCount = 0
+
+            for (index, photo) in photosLibraryPhotos.enumerated() {
+                if let asset = PhotoAssetHelper.fetchAsset(for: photo) {
+                    let actualSize = assetFileSize(asset)
+                    if actualSize > 0 && photo.fileSize != actualSize {
+                        photo.fileSize = actualSize
+                        updatedCount += 1
+                    }
+                }
+
+                if (index + 1) % 200 == 0 {
+                    try? modelContext.save()
+                }
+
+                progressHandler(Double(index + 1) / Double(total))
+            }
+
+            try modelContext.save()
+            return (updatedCount, total, nil)
+        } catch {
+            return (0, 0, error.localizedDescription)
+        }
     }
     
     private func createFolderHierarchy(from nodes: [FolderNode], parent: Folder) async {
@@ -130,47 +150,25 @@ actor IndexingService {
                 photoDescription: metadata.description,
                 keywords: metadata.keywords ?? [],
                 originalMetadataJSON: metadataJSON.flatMap { String(data: $0, encoding: .utf8) },
-                thumbnailData: thumbnailData,
                 hasFullMetadata: true,
                 folder: folder
             )
             modelContext.insert(photo)
-            
-            // Build search index record
-            addSearchIndexRecord(for: photo)
+            if let thumbnailData = thumbnailData {
+                let thumb = PhotoThumbnail(photoFilePath: url.path, imageData: thumbnailData)
+                modelContext.insert(thumb)
+            }
         } catch {
             print("Cloud-only photo, indexing with partial data: \(url.lastPathComponent)")
             let photo = Photo(
                 filePath: url.path,
                 fileName: url.lastPathComponent,
                 fileSize: fileSize,
-                thumbnailData: nil,
                 hasFullMetadata: false,
                 folder: folder
             )
             modelContext.insert(photo)
-            
-            // Build search index record (with limited data)
-            addSearchIndexRecord(for: photo)
         }
-    }
-    
-    private func addSearchIndexRecord(for photo: Photo) {
-        let record = SearchIndexService.PhotoSearchRecord(
-            id: photo.persistentModelID,
-            fileName: photo.fileName,
-            description: photo.photoDescription,
-            keywords: photo.keywords,
-            cameraMake: photo.cameraMake,
-            cameraModel: photo.cameraModel,
-            lensModel: photo.lensModel,
-            city: photo.city,
-            country: photo.country,
-            captureDate: photo.captureDate,
-            filePath: photo.filePath,
-            tagNames: [] // Tags will be empty during initial scan
-        )
-        searchIndexRecords.append(record)
     }
 
     func enrichMetadata(rootURL: URL?, progressHandler: @escaping (Double) -> Void) async -> String? {
@@ -194,6 +192,7 @@ actor IndexingService {
     }
 
     private func enrichSinglePhoto(_ photo: Photo, rootURL: URL?) async {
+        guard !photo.hasFullMetadata else { return }
         // Check if this is a Photos Library photo (path starts with "photos://")
         if PhotoAssetHelper.isPhotosLibraryPhoto(photo) {
             await enrichPhotosLibraryPhoto(photo)
@@ -213,6 +212,12 @@ actor IndexingService {
         // Try to extract metadata and thumbnail without downloading
         // QLThumbnailGenerator can work with iCloud stubs
         let thumbnailData = await metadataExtractor.generateQLThumbnail(from: url)
+        
+        // Save thumbnail to separate entity if available
+        if let thumbnailData = thumbnailData {
+            let thumb = PhotoThumbnail(photoFilePath: photo.filePath, imageData: thumbnailData)
+            modelContext.insert(thumb)
+        }
         
         // Try to extract whatever metadata is available locally
         do {
@@ -238,14 +243,11 @@ actor IndexingService {
             photo.photoDescription = metadata.description
             photo.keywords = metadata.keywords ?? []
             photo.originalMetadataJSON = metadataJSON.flatMap { String(data: $0, encoding: .utf8) }
-            photo.thumbnailData = thumbnailData
             photo.hasFullMetadata = true
             
             print("[\(photo.fileName)] Enriched successfully")
         } catch {
-            // If metadata extraction fails, at least save the thumbnail if we got one
             if thumbnailData != nil {
-                photo.thumbnailData = thumbnailData
                 print("[\(photo.fileName)] Thumbnail only (metadata unavailable)")
             } else {
                 print("[\(photo.fileName)] Enrichment failed: \(error.localizedDescription)")
@@ -277,6 +279,7 @@ actor IndexingService {
                     // Always update fields available directly from PHAsset (more reliable than EXIF)
                     photo.captureDate = asset.creationDate
                     photo.modificationDate = asset.modificationDate
+                    photo.fileSize = self.assetFileSize(asset)
                     photo.width = asset.pixelWidth
                     photo.height = asset.pixelHeight
                     if let location = asset.location {
@@ -296,7 +299,10 @@ actor IndexingService {
                         let thumb = renderer.image { _ in
                             uiImage.draw(in: CGRect(origin: origin, size: scaledSize))
                         }
-                        photo.thumbnailData = thumb.jpegData(compressionQuality: 0.7)
+                        if let jpegData = thumb.jpegData(compressionQuality: 0.7) {
+                            let thumbRecord = PhotoThumbnail(photoFilePath: photo.filePath, imageData: jpegData)
+                            self.modelContext.insert(thumbRecord)
+                        }
                     }
                     
                     // Extract EXIF metadata from image data
@@ -341,6 +347,21 @@ actor IndexingService {
             }
         }
         return result
+    }
+
+    private func assetFileSize(_ asset: PHAsset) -> Int64 {
+        for resource in PHAssetResource.assetResources(for: asset) {
+            if let value = resource.value(forKey: "fileSize") as? Int64 {
+                return max(0, value)
+            }
+            if let value = resource.value(forKey: "fileSize") as? CLong {
+                return max(0, Int64(value))
+            }
+            if let value = resource.value(forKey: "fileSize") as? NSNumber {
+                return max(0, value.int64Value)
+            }
+        }
+        return 0
     }
 
     private func findOrCreateFolder(path: String) async -> Folder? {

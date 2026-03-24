@@ -40,17 +40,20 @@ struct PhotosGridView: View {
     
     var body: some View {
         NavigationStack {
-            ScrollView {
-                LazyVGrid(columns: [
-                    GridItem(.adaptive(minimum: 150, maximum: 200), spacing: 8)
-                ], spacing: 8) {
-                    ForEach(filteredPhotos) { photo in
-                        NavigationLink(destination: PhotoDetailView(photo: photo)) {
-                            PhotoThumbnailView(photo: photo)
+            VStack(spacing: 0) {
+                EnrichmentBannerView()
+                ScrollView {
+                    LazyVGrid(columns: [
+                        GridItem(.adaptive(minimum: 150, maximum: 200), spacing: 8)
+                    ], spacing: 8) {
+                        ForEach(filteredPhotos) { photo in
+                            NavigationLink(destination: PhotoDetailView(photo: photo)) {
+                                PhotoThumbnailView(photo: photo)
+                            }
                         }
                     }
+                    .padding()
                 }
-                .padding()
             }
             .navigationTitle("Photos")
             .searchable(text: $searchText, prompt: "Search photos")
@@ -83,9 +86,11 @@ struct PhotosGridView: View {
 }
 
 struct PhotoThumbnailView: View {
+    @Environment(\.modelContext) private var modelContext
     let photo: Photo
     @State private var liveImage: UIImage? = nil
     @State private var requestID: PHImageRequestID? = nil
+    @State private var cachedImage: UIImage? = nil
     
     private var borderColor: Color {
         if !photo.tags.isEmpty || !photo.keywords.isEmpty {
@@ -98,7 +103,7 @@ struct PhotoThumbnailView: View {
     }
     
     private var displayImage: UIImage? {
-        if let data = photo.thumbnailData, let img = UIImage(data: data) { return img }
+        if let img = cachedImage { return img }
         return liveImage
     }
     
@@ -144,14 +149,40 @@ struct PhotoThumbnailView: View {
                 .padding(6)
             }
         }
-        .onAppear { loadLiveThumbnailIfNeeded() }
+        .onAppear { loadThumbnail() }
         .onDisappear { cancelLiveThumbnail() }
     }
     
-    private func loadLiveThumbnailIfNeeded() {
-        guard photo.thumbnailData == nil, PhotoAssetHelper.isPhotosLibraryPhoto(photo) else { return }
+    private func loadThumbnail() {
+        // Check PhotoThumbnail table first
+        let filePath = photo.filePath
+        let desc = FetchDescriptor<PhotoThumbnail>(predicate: #Predicate { $0.photoFilePath == filePath })
+        if let thumb = try? modelContext.fetch(desc).first {
+            cachedImage = UIImage(data: thumb.imageData)
+            if cachedImage != nil { return }
+        }
+        
+        // No cached thumbnail — request live from Photos Library
+        guard PhotoAssetHelper.isPhotosLibraryPhoto(photo) else { return }
+        
         requestID = PhotoAssetHelper.requestThumbnail(for: photo) { image in
-            if let image { DispatchQueue.main.async { liveImage = image } }
+            if let image {
+                DispatchQueue.main.async {
+                    self.liveImage = image
+                    // Cache-on-display: persist to PhotoThumbnail entity
+                    if let data = image.jpegData(compressionQuality: 0.7) {
+                        let thumb = PhotoThumbnail(photoFilePath: filePath, imageData: data)
+                        modelContext.insert(thumb)
+                    }
+                }
+            }
+        }
+    }
+    
+    private func downscale(_ image: UIImage, to size: CGSize) -> UIImage {
+        let renderer = UIGraphicsImageRenderer(size: size)
+        return renderer.image { _ in
+            image.draw(in: CGRect(origin: .zero, size: size))
         }
     }
     

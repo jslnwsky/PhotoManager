@@ -157,6 +157,8 @@ struct MapView: View {
 
     var body: some View {
         NavigationStack {
+            VStack(spacing: 0) {
+            EnrichmentBannerView()
             ZStack(alignment: .bottom) {
                 ClusteredMapView(
                     annotations: cachedAnnotations,
@@ -179,6 +181,7 @@ struct MapView: View {
                         .transition(.move(edge: .bottom).combined(with: .opacity))
                 }
             }
+            } // VStack
             .navigationTitle("Map")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -285,13 +288,15 @@ struct MapView: View {
 // MARK: - Preview card
 
 struct PhotoMapPreview: View {
+    @Environment(\.modelContext) private var modelContext
     let photo: Photo
     @Binding var selectedPhoto: Photo?
     @State private var liveImage: UIImage?
+    @State private var cachedImage: UIImage?
     @State private var requestID: PHImageRequestID?
 
     private var displayImage: UIImage? {
-        if let d = photo.thumbnailData, let img = UIImage(data: d) { return img }
+        if let img = cachedImage { return img }
         return liveImage
     }
 
@@ -339,7 +344,13 @@ struct PhotoMapPreview: View {
     }
 
     private func loadThumbnailIfNeeded() {
-        guard photo.thumbnailData == nil, PhotoAssetHelper.isPhotosLibraryPhoto(photo) else { return }
+        let filePath = photo.filePath
+        let desc = FetchDescriptor<PhotoThumbnail>(predicate: #Predicate { $0.photoFilePath == filePath })
+        if let thumb = try? modelContext.fetch(desc).first {
+            cachedImage = UIImage(data: thumb.imageData)
+            if cachedImage != nil { return }
+        }
+        guard PhotoAssetHelper.isPhotosLibraryPhoto(photo) else { return }
         requestID = PhotoAssetHelper.requestThumbnail(
             for: photo, size: CGSize(width: 120, height: 120)
         ) { img in

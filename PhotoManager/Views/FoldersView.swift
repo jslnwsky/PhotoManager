@@ -250,51 +250,65 @@ struct FoldersView: View {
                     }
                 }
                 ToolbarItem(placement: .navigationBarLeading) {
-                    if !vm.isBusy {
-                        Menu {
-                            Button {
-                                if let url = vm.storedRootURL { vm.startScan(rootURL: url, container: modelContext.container) }
-                                else {
-                                    activeFolderPicker = .scan
-                                    showingFolderPicker = true
-                                }
-                            } label: {
-                                Label("Scan iCloud Drive", systemImage: "arrow.clockwise")
-                            }
-                            Button { vm.startPhotoLibraryScan(container: modelContext.container) } label: {
-                                Label("Scan Photos Library", systemImage: "photo.on.rectangle")
-                            }
-                            Button {
+                    Menu {
+                        Button {
+                            if let url = vm.storedRootURL { vm.startScan(rootURL: url, container: modelContext.container) }
+                            else {
                                 activeFolderPicker = .scan
                                 showingFolderPicker = true
-                            } label: {
-                                Label("Change Folder", systemImage: "folder")
-                            }
-                            Button { vm.startEnrich(rootURL: vm.storedRootURL, container: modelContext.container) } label: {
-                                Label("Fetch Full Metadata", systemImage: "arrow.down.circle")
-                            }
-                            Button { vm.startGeocoding(container: modelContext.container) } label: {
-                                Label("Geocode Locations", systemImage: "mappin.and.ellipse")
-                            }
-                            Button { vm.startRecalculatePhotosLibraryFileSizes(container: modelContext.container) } label: {
-                                Label("Recalculate File Sizes", systemImage: "externaldrive.fill.badge.person.crop")
-                            }
-                            Divider()
-                            Button {
-                                activeFolderPicker = .backup
-                                showingFolderPicker = true
-                            } label: {
-                                Label("Backup Data", systemImage: "externaldrive.badge.plus")
-                            }
-                            Button(role: .destructive) {
-                                activeFolderPicker = .restore
-                                showingFolderPicker = true
-                            } label: {
-                                Label("Restore Backup", systemImage: "arrow.counterclockwise.circle")
                             }
                         } label: {
-                            Image(systemName: "ellipsis.circle")
+                            Label("Scan iCloud Drive", systemImage: "arrow.clockwise")
                         }
+                        .disabled(vm.isBusy)
+
+                        Button { vm.startPhotoLibraryScan(container: modelContext.container) } label: {
+                            Label("Scan Photos Library", systemImage: "photo.on.rectangle")
+                        }
+                        .disabled(vm.isBusy)
+
+                        Button {
+                            activeFolderPicker = .scan
+                            showingFolderPicker = true
+                        } label: {
+                            Label("Change Folder", systemImage: "folder")
+                        }
+                        .disabled(vm.isBusy)
+
+                        Button { vm.startEnrich(rootURL: vm.storedRootURL, container: modelContext.container) } label: {
+                            Label("Fetch Full Metadata", systemImage: "arrow.down.circle")
+                        }
+                        .disabled(vm.isBusy)
+
+                        Button { vm.startGeocoding(container: modelContext.container) } label: {
+                            Label("Geocode Locations", systemImage: "mappin.and.ellipse")
+                        }
+                        .disabled(vm.isBusy)
+
+                        Button { vm.startRecalculatePhotosLibraryFileSizes(container: modelContext.container) } label: {
+                            Label("Recalculate File Sizes", systemImage: "externaldrive.fill.badge.person.crop")
+                        }
+                        .disabled(vm.isBusy)
+
+                        Divider()
+
+                        Button {
+                            activeFolderPicker = .backup
+                            showingFolderPicker = true
+                        } label: {
+                            Label("Backup Data", systemImage: "externaldrive.badge.plus")
+                        }
+                        .disabled(vm.isBusy)
+
+                        Button(role: .destructive) {
+                            activeFolderPicker = .restore
+                            showingFolderPicker = true
+                        } label: {
+                            Label("Restore Backup", systemImage: "arrow.counterclockwise.circle")
+                        }
+                        .disabled(vm.isBusy)
+                    } label: {
+                        Image(systemName: "ellipsis.circle")
                     }
                 }
             }

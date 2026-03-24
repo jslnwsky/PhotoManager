@@ -252,6 +252,21 @@ final class BackupService {
         return backupFolderURL
     }
 
+    func createSafetySnapshot() throws -> URL {
+        guard let appSupportURL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else {
+            throw BackupError.invalidBackup("Unable to locate application support directory")
+        }
+
+        let snapshotsRootURL = appSupportURL.appendingPathComponent("RestoreSafetySnapshots", isDirectory: true)
+        try FileManager.default.createDirectory(at: snapshotsRootURL, withIntermediateDirectories: true)
+        return try createBackup(in: snapshotsRootURL)
+    }
+
+    func deleteSnapshot(at snapshotURL: URL) throws {
+        guard FileManager.default.fileExists(atPath: snapshotURL.path) else { return }
+        try FileManager.default.removeItem(at: snapshotURL)
+    }
+
     func restoreBackup(from backupFolderURL: URL) throws {
         let manifestURL = backupFolderURL.appendingPathComponent("manifest.json")
         guard FileManager.default.fileExists(atPath: manifestURL.path) else {

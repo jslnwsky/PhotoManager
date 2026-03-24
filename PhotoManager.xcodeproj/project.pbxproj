@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		319131312F71845800FCC4D6 /* SearchIndexService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 319131302F71845800FCC4D6 /* SearchIndexService.swift */; };
+		31D4A0022F80000000C4672D /* BackupService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 31D4A0012F80000000C4672D /* BackupService.swift */; };
 		319131332F71E69900FCC4D6 /* ThumbnailExtractionService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 319131322F71E69900FCC4D6 /* ThumbnailExtractionService.swift */; };
 		31CB2D1A2F6EF28500C4672D /* PhotoLibraryService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 31CB2D192F6EF28500C4672D /* PhotoLibraryService.swift */; };
 		31CB2D1C2F6F5BBE00C4672D /* GeocodingService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 31CB2D1B2F6F5BBE00C4672D /* GeocodingService.swift */; };
@@ -36,6 +37,7 @@
 
 /* Begin PBXFileReference section */
 		319131302F71845800FCC4D6 /* SearchIndexService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SearchIndexService.swift; sourceTree = "<group>"; };
+		31D4A0012F80000000C4672D /* BackupService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackupService.swift; sourceTree = "<group>"; };
 		319131322F71E69900FCC4D6 /* ThumbnailExtractionService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ThumbnailExtractionService.swift; sourceTree = "<group>"; };
 		31CB2D192F6EF28500C4672D /* PhotoLibraryService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhotoLibraryService.swift; sourceTree = "<group>"; };
 		31CB2D1B2F6F5BBE00C4672D /* GeocodingService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GeocodingService.swift; sourceTree = "<group>"; };
@@ -132,6 +134,7 @@
 		B10000001B00000000000002F /* Services */ = {
 			isa = PBXGroup;
 			children = (
+				31D4A0012F80000000C4672D /* BackupService.swift */,
 				319131322F71E69900FCC4D6 /* ThumbnailExtractionService.swift */,
 				319131302F71845800FCC4D6 /* SearchIndexService.swift */,
 				31CB2D192F6EF28500C4672D /* PhotoLibraryService.swift */,
@@ -236,6 +239,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				31D4A0022F80000000C4672D /* BackupService.swift in Sources */,
 				B10000001B000000000000003 /* ContentView.swift in Sources */,
 				B10000001B000000000000001 /* PhotoManagerApp.swift in Sources */,
 				B10000001B000000000000009 /* Photo.swift in Sources */,

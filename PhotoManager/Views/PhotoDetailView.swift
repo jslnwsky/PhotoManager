@@ -156,20 +156,6 @@ struct MetadataSection: View {
 
 struct LocationSection: View {
     let photo: Photo
-    @State private var position: MapCameraPosition
-    
-    init(photo: Photo) {
-        self.photo = photo
-        
-        if let location = photo.location {
-            _position = State(initialValue: .region(MKCoordinateRegion(
-                center: location.coordinate,
-                span: MKCoordinateSpan(latitudeDelta: 0.1, longitudeDelta: 0.1)
-            )))
-        } else {
-            _position = State(initialValue: .automatic)
-        }
-    }
     
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -177,16 +163,10 @@ struct LocationSection: View {
                 .font(.headline)
             
             if let location = photo.location {
-                Map(position: $position) {
-                    Marker("Photo Location", coordinate: location.coordinate)
-                        .tint(.red)
-                }
-                .mapStyle(.standard)
-                .mapControls {
-                    MapPitchToggle()
-                }
-                .frame(height: 200)
-                .cornerRadius(12)
+                SinglePhotoMapView(photo: photo)
+                    .frame(height: 200)
+                    .cornerRadius(12)
+                    .scrollDisabled(true)
                 
                 if let city = photo.city, let country = photo.country {
                     MetadataRow(label: "Location", value: "\(city), \(country)")
@@ -289,6 +269,97 @@ struct MetadataRow: View {
             
             Text(value)
                 .font(.subheadline)
+        }
+    }
+}
+
+struct SinglePhotoMapView: UIViewRepresentable {
+    let photo: Photo
+    var onTap: (() -> Void)?
+    
+    func makeUIView(context: Context) -> MKMapView {
+        let mapView = MKMapView()
+        mapView.delegate = context.coordinator
+        
+        // Configure map for performance
+        mapView.isPitchEnabled = false
+        mapView.isRotateEnabled = false
+        mapView.isScrollEnabled = true
+        mapView.isZoomEnabled = true
+        
+        // Add annotation for this photo
+        if let location = photo.location {
+            let annotation = MKPointAnnotation()
+            annotation.coordinate = location.coordinate
+            annotation.title = photo.fileName
+            if let city = photo.city, let country = photo.country {
+                annotation.subtitle = "\(city), \(country)"
+            } else if let country = photo.country {
+                annotation.subtitle = country
+            }
+            mapView.addAnnotation(annotation)
+            
+            // Set region centered on photo
+            let region = MKCoordinateRegion(
+                center: location.coordinate,
+                span: MKCoordinateSpan(latitudeDelta: 0.05, longitudeDelta: 0.05)
+            )
+            mapView.setRegion(region, animated: false)
+        }
+        
+        // Add tap gesture recognizer
+        let tapGesture = UITapGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.handleTap(_:)))
+        mapView.addGestureRecognizer(tapGesture)
+        
+        return mapView
+    }
+    
+    func updateUIView(_ uiView: MKMapView, context: Context) {
+        // Update region if needed
+        if let location = photo.location {
+            let currentCenter = uiView.centerCoordinate
+            let newCenter = location.coordinate
+            
+            // Only update if significantly different (more than 100 meters)
+            let currentLoc = CLLocation(latitude: currentCenter.latitude, longitude: currentCenter.longitude)
+            let newLoc = CLLocation(latitude: newCenter.latitude, longitude: newCenter.longitude)
+            
+            if currentLoc.distance(from: newLoc) > 100 {
+                let region = MKCoordinateRegion(
+                    center: newCenter,
+                    span: MKCoordinateSpan(latitudeDelta: 0.05, longitudeDelta: 0.05)
+                )
+                uiView.setRegion(region, animated: true)
+            }
+        }
+    }
+    
+    func makeCoordinator() -> Coordinator {
+        Coordinator(self)
+    }
+    
+    class Coordinator: NSObject, MKMapViewDelegate {
+        var parent: SinglePhotoMapView
+        
+        init(_ parent: SinglePhotoMapView) {
+            self.parent = parent
+        }
+        
+        func mapView(_ mapView: MKMapView, viewFor annotation: MKAnnotation) -> MKAnnotationView? {
+            if annotation is MKUserLocation {
+                return nil
+            }
+            
+            let view = MKMarkerAnnotationView(annotation: annotation, reuseIdentifier: "photo")
+            view.markerTintColor = .red
+            view.glyphTintColor = .white
+            view.canShowCallout = true
+            
+            return view
+        }
+        
+        @objc func handleTap(_ gesture: UITapGestureRecognizer) {
+            parent.onTap?()
         }
     }
 }

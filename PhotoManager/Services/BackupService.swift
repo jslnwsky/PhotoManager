@@ -1,7 +1,228 @@
 import Foundation
 import SwiftData
+import BackgroundTasks
+
+struct BackupAutomationSettingsStore {
+    enum Keys {
+        static let destinationBookmark = "backupDestinationBookmark"
+        static let automationEnabled = "backupAutomationEnabled"
+        static let preferredHour = "backupPreferredHour"
+        static let backupFrequency = "backupFrequency"
+        static let lastBackupAt = "lastBackupAt"
+        static let lastFullBackupAt = "lastFullBackupAt"
+        static let incrementalBackupsSinceFull = "incrementalBackupsSinceFull"
+    }
+
+    enum BackupFrequency: String, CaseIterable {
+        case manualOnly
+        case daily
+        case weekly
+
+        var displayName: String {
+            switch self {
+            case .manualOnly:
+                return "Manual Only"
+            case .daily:
+                return "Daily"
+            case .weekly:
+                return "Weekly"
+            }
+        }
+    }
+
+    static var automationEnabled: Bool {
+        get { UserDefaults.standard.bool(forKey: Keys.automationEnabled) }
+        set { UserDefaults.standard.set(newValue, forKey: Keys.automationEnabled) }
+    }
+
+    static var preferredHour: Int {
+        get {
+            let value = UserDefaults.standard.integer(forKey: Keys.preferredHour)
+            return (0..<24).contains(value) ? value : 2
+        }
+        set {
+            let clamped = min(max(newValue, 0), 23)
+            UserDefaults.standard.set(clamped, forKey: Keys.preferredHour)
+        }
+    }
+
+    static var backupFrequency: BackupFrequency {
+        get {
+            let raw = UserDefaults.standard.string(forKey: Keys.backupFrequency) ?? BackupFrequency.manualOnly.rawValue
+            return BackupFrequency(rawValue: raw) ?? .manualOnly
+        }
+        set { UserDefaults.standard.set(newValue.rawValue, forKey: Keys.backupFrequency) }
+    }
+
+    static var destinationBookmarkData: Data? {
+        get { UserDefaults.standard.data(forKey: Keys.destinationBookmark) }
+        set {
+            if let newValue {
+                UserDefaults.standard.set(newValue, forKey: Keys.destinationBookmark)
+            } else {
+                UserDefaults.standard.removeObject(forKey: Keys.destinationBookmark)
+            }
+        }
+    }
+
+    static var lastBackupAt: Date? {
+        get { UserDefaults.standard.object(forKey: Keys.lastBackupAt) as? Date }
+        set { UserDefaults.standard.set(newValue, forKey: Keys.lastBackupAt) }
+    }
+
+    static var lastFullBackupAt: Date? {
+        get { UserDefaults.standard.object(forKey: Keys.lastFullBackupAt) as? Date }
+        set { UserDefaults.standard.set(newValue, forKey: Keys.lastFullBackupAt) }
+    }
+
+    static var incrementalBackupsSinceFull: Int {
+        get { max(0, UserDefaults.standard.integer(forKey: Keys.incrementalBackupsSinceFull)) }
+        set { UserDefaults.standard.set(max(0, newValue), forKey: Keys.incrementalBackupsSinceFull) }
+    }
+
+    static func resolveDestinationURL() -> URL? {
+        guard let data = destinationBookmarkData else { return nil }
+        var isStale = false
+        let url = try? URL(resolvingBookmarkData: data, bookmarkDataIsStale: &isStale)
+        if isStale {
+            destinationBookmarkData = nil
+            return nil
+        }
+        return url
+    }
+}
+
+enum BackupAutomationCoordinator {
+    static let taskIdentifier = "com.75-c.photomanager.backup.processing"
+    private static var modelContainerProvider: (() -> ModelContainer)?
+
+    static func configure(modelContainerProvider: @escaping () -> ModelContainer) {
+        self.modelContainerProvider = modelContainerProvider
+    }
+
+    static func registerBackgroundTask() {
+        BGTaskScheduler.shared.register(forTaskWithIdentifier: taskIdentifier, using: nil) { task in
+            guard let processingTask = task as? BGProcessingTask else {
+                task.setTaskCompleted(success: false)
+                return
+            }
+            handleProcessingTask(processingTask)
+        }
+    }
+
+    static func scheduleNextIfNeeded(now: Date = Date()) {
+        guard BackupAutomationSettingsStore.automationEnabled else { return }
+        guard BackupAutomationSettingsStore.backupFrequency != .manualOnly else { return }
+
+        BGTaskScheduler.shared.cancel(taskRequestWithIdentifier: taskIdentifier)
+
+        let request = BGProcessingTaskRequest(identifier: taskIdentifier)
+        request.requiresExternalPower = true
+        request.requiresNetworkConnectivity = true
+        request.earliestBeginDate = nextPreferredDate(from: now)
+        do {
+            try BGTaskScheduler.shared.submit(request)
+        } catch {
+            print("⚠️ Failed to schedule automated backup task: \(error)")
+        }
+    }
+
+    static func cancelScheduled() {
+        BGTaskScheduler.shared.cancel(taskRequestWithIdentifier: taskIdentifier)
+    }
+
+    static func runIfDueInForeground(modelContainer: ModelContainer, now: Date = Date()) async {
+        guard shouldRunBackup(now: now) else { return }
+        guard let destinationURL = BackupAutomationSettingsStore.resolveDestinationURL() else { return }
+
+        let accessing = destinationURL.startAccessingSecurityScopedResource()
+        defer {
+            if accessing { destinationURL.stopAccessingSecurityScopedResource() }
+        }
+
+        do {
+            let service = BackupService(modelContainer: modelContainer)
+            _ = try service.createBackupUsingLocalStaging(in: destinationURL)
+            BackupAutomationSettingsStore.lastBackupAt = now
+            BackupAutomationSettingsStore.lastFullBackupAt = now
+            BackupAutomationSettingsStore.incrementalBackupsSinceFull = 0
+        } catch {
+            print("⚠️ Automated foreground backup failed: \(error)")
+        }
+    }
+
+    private static func handleProcessingTask(_ task: BGProcessingTask) {
+        scheduleNextIfNeeded()
+
+        let work = Task {
+            let success = await performScheduledBackup(now: Date())
+            task.setTaskCompleted(success: success)
+        }
+
+        task.expirationHandler = {
+            work.cancel()
+        }
+    }
+
+    private static func performScheduledBackup(now: Date) async -> Bool {
+        guard shouldRunBackup(now: now) else { return true }
+        guard let modelContainerProvider else { return false }
+        guard let destinationURL = BackupAutomationSettingsStore.resolveDestinationURL() else { return false }
+
+        let accessing = destinationURL.startAccessingSecurityScopedResource()
+        defer {
+            if accessing { destinationURL.stopAccessingSecurityScopedResource() }
+        }
+
+        do {
+            let service = BackupService(modelContainer: modelContainerProvider())
+            _ = try service.createBackupUsingLocalStaging(in: destinationURL)
+            BackupAutomationSettingsStore.lastBackupAt = now
+            BackupAutomationSettingsStore.lastFullBackupAt = now
+            BackupAutomationSettingsStore.incrementalBackupsSinceFull = 0
+            return true
+        } catch {
+            print("⚠️ Automated scheduled backup failed: \(error)")
+            return false
+        }
+    }
+
+    private static func shouldRunBackup(now: Date) -> Bool {
+        guard BackupAutomationSettingsStore.automationEnabled else { return false }
+        guard BackupAutomationSettingsStore.backupFrequency != .manualOnly else { return false }
+
+        let calendar = Calendar.current
+        let preferredHour = BackupAutomationSettingsStore.preferredHour
+        let currentHour = calendar.component(.hour, from: now)
+        guard currentHour >= preferredHour else { return false }
+
+        guard let lastBackupAt = BackupAutomationSettingsStore.lastBackupAt else { return true }
+
+        switch BackupAutomationSettingsStore.backupFrequency {
+        case .manualOnly:
+            return false
+        case .daily:
+            return !calendar.isDate(lastBackupAt, inSameDayAs: now)
+        case .weekly:
+            guard let days = calendar.dateComponents([.day], from: lastBackupAt, to: now).day else { return true }
+            return days >= 7
+        }
+    }
+
+    private static func nextPreferredDate(from now: Date) -> Date {
+        let calendar = Calendar.current
+        let preferredHour = BackupAutomationSettingsStore.preferredHour
+        let todayAtPreferred = calendar.date(bySettingHour: preferredHour, minute: 0, second: 0, of: now) ?? now
+        if now < todayAtPreferred {
+            return todayAtPreferred
+        }
+        return calendar.date(byAdding: .day, value: 1, to: todayAtPreferred) ?? now.addingTimeInterval(86_400)
+    }
+}
 
 final class BackupService {
+    typealias BackupProgressHandler = (String) -> Void
+
     private let modelContainer: ModelContainer
     private let encoder: JSONEncoder
     private let decoder: JSONDecoder
@@ -119,7 +340,15 @@ final class BackupService {
         let rootFolderBookmark: Data?
     }
 
-    func createBackup(in destinationFolderURL: URL) throws -> URL {
+    struct BackupPreview {
+        let folderName: String
+        let appVersion: String
+        let createdAt: Date
+        let counts: BackupCounts
+    }
+
+    func createBackup(in destinationFolderURL: URL, progressHandler: BackupProgressHandler? = nil) throws -> URL {
+        progressHandler?("Reading database records...")
         let context = ModelContext(modelContainer)
 
         let photos = try context.fetch(FetchDescriptor<Photo>())
@@ -127,11 +356,11 @@ final class BackupService {
         let tags = try context.fetch(FetchDescriptor<Tag>())
         let photoTags = try context.fetch(FetchDescriptor<PhotoTag>())
         let locations = try context.fetch(FetchDescriptor<PhotoLocation>())
-        let thumbnails = try context.fetch(FetchDescriptor<PhotoThumbnail>())
 
         let backupFolderURL = try createBackupFolder(in: destinationFolderURL)
         let thumbnailsFolderURL = backupFolderURL.appendingPathComponent("thumbnails", isDirectory: true)
         try FileManager.default.createDirectory(at: thumbnailsFolderURL, withIntermediateDirectories: true)
+        progressHandler?("Writing backup files...")
 
         let folderRecords = folders
             .map { folder in
@@ -212,15 +441,11 @@ final class BackupService {
             }
             .sorted { $0.photoFilePath < $1.photoFilePath }
 
-        var thumbnailRecords: [PhotoThumbnailRecord] = []
-        thumbnailRecords.reserveCapacity(thumbnails.count)
-
-        for (index, thumbnail) in thumbnails.enumerated() {
-            let fileName = "thumb_\(index).bin"
-            let fileURL = thumbnailsFolderURL.appendingPathComponent(fileName)
-            try thumbnail.imageData.write(to: fileURL, options: .atomic)
-            thumbnailRecords.append(PhotoThumbnailRecord(photoFilePath: thumbnail.photoFilePath, fileName: fileName))
-        }
+        let thumbnailRecords = try writeThumbnailsAndBuildRecords(
+            in: thumbnailsFolderURL,
+            context: context,
+            progressHandler: progressHandler
+        )
 
         let appStateRecord = AppStateRecord(
             rootFolderBookmark: UserDefaults.standard.data(forKey: "rootFolderBookmark")
@@ -240,6 +465,7 @@ final class BackupService {
             )
         )
 
+        progressHandler?("Writing JSON files...")
         try writeJSON(manifest, to: backupFolderURL.appendingPathComponent("manifest.json"))
         try writeJSON(photoRecords, to: backupFolderURL.appendingPathComponent("photos.json"))
         try writeJSON(folderRecords, to: backupFolderURL.appendingPathComponent("folders.json"))
@@ -248,8 +474,88 @@ final class BackupService {
         try writeJSON(locationRecords, to: backupFolderURL.appendingPathComponent("photo_locations.json"))
         try writeJSON(thumbnailRecords, to: backupFolderURL.appendingPathComponent("photo_thumbnails.json"))
         try writeJSON(appStateRecord, to: backupFolderURL.appendingPathComponent("app_state.json"))
+        progressHandler?("Backup files written")
 
         return backupFolderURL
+    }
+
+    func createBackupUsingLocalStaging(in destinationFolderURL: URL, progressHandler: BackupProgressHandler? = nil) throws -> URL {
+        progressHandler?("Preparing local staging...")
+        let stagingRootURL = try createBackupStagingRoot()
+        defer {
+            try? FileManager.default.removeItem(at: stagingRootURL)
+        }
+
+        let localBackupURL = try createBackup(
+            in: stagingRootURL,
+            progressHandler: { status in
+                progressHandler?("Local build: \(status)")
+            }
+        )
+
+        let destinationBackupURL = destinationFolderURL.appendingPathComponent(localBackupURL.lastPathComponent, isDirectory: true)
+        if FileManager.default.fileExists(atPath: destinationBackupURL.path) {
+            try FileManager.default.removeItem(at: destinationBackupURL)
+        }
+
+        progressHandler?("Copying backup to destination...")
+        do {
+            try copyBackupFolder(from: localBackupURL, to: destinationBackupURL, progressHandler: progressHandler)
+            progressHandler?("Backup copy complete")
+        } catch {
+            progressHandler?("Copy failed: \(error.localizedDescription)")
+            throw error
+        }
+
+        return destinationBackupURL
+    }
+
+    private func copyBackupFolder(from sourceURL: URL, to destinationURL: URL, progressHandler: BackupProgressHandler?) throws {
+        let fileManager = FileManager.default
+        
+        // Create destination root
+        try fileManager.createDirectory(at: destinationURL, withIntermediateDirectories: true)
+        
+        // Get contents of source
+        let contents = try fileManager.contentsOfDirectory(at: sourceURL, includingPropertiesForKeys: nil)
+        let total = contents.count
+        var copied = 0
+        
+        for item in contents {
+            let itemName = item.lastPathComponent
+            let destItem = destinationURL.appendingPathComponent(itemName)
+            
+            var isDirectory: ObjCBool = false
+            fileManager.fileExists(atPath: item.path, isDirectory: &isDirectory)
+            
+            if isDirectory.boolValue {
+                // Recursively copy subdirectories (like thumbnails)
+                try copyDirectoryRecursive(from: item, to: destItem, progressHandler: { msg in
+                    progressHandler?("Copying \(itemName): \(msg)")
+                })
+            } else {
+                // Copy file directly
+                try fileManager.copyItem(at: item, to: destItem)
+            }
+            
+            copied += 1
+            if copied.isMultiple(of: 10) || copied == total {
+                progressHandler?("Copied \(copied)/\(total) items")
+            }
+        }
+    }
+    
+    private func copyDirectoryRecursive(from sourceURL: URL, to destinationURL: URL, progressHandler: BackupProgressHandler?) throws {
+        let fileManager = FileManager.default
+        try fileManager.createDirectory(at: destinationURL, withIntermediateDirectories: true)
+        
+        let contents = try fileManager.contentsOfDirectory(at: sourceURL, includingPropertiesForKeys: nil)
+        for item in contents {
+            let itemName = item.lastPathComponent
+            let destItem = destinationURL.appendingPathComponent(itemName)
+            try fileManager.copyItem(at: item, to: destItem)
+        }
+        progressHandler?("\(contents.count) files")
     }
 
     func createSafetySnapshot() throws -> URL {
@@ -265,6 +571,25 @@ final class BackupService {
     func deleteSnapshot(at snapshotURL: URL) throws {
         guard FileManager.default.fileExists(atPath: snapshotURL.path) else { return }
         try FileManager.default.removeItem(at: snapshotURL)
+    }
+
+    func loadBackupPreview(from backupFolderURL: URL) throws -> BackupPreview {
+        let manifestURL = backupFolderURL.appendingPathComponent("manifest.json")
+        guard FileManager.default.fileExists(atPath: manifestURL.path) else {
+            throw BackupError.missingFile("manifest.json")
+        }
+
+        let manifest: BackupManifest = try readJSON(from: manifestURL)
+        guard manifest.formatVersion == 1 else {
+            throw BackupError.unsupportedVersion(manifest.formatVersion)
+        }
+
+        return BackupPreview(
+            folderName: backupFolderURL.lastPathComponent,
+            appVersion: manifest.appVersion,
+            createdAt: manifest.createdAt,
+            counts: manifest.counts
+        )
     }
 
     func restoreBackup(from backupFolderURL: URL) throws {
@@ -295,18 +620,6 @@ final class BackupService {
             locationRecords: locationRecords,
             thumbnailRecords: thumbnailRecords
         )
-
-        var thumbnailDataByPhotoPath: [String: Data] = [:]
-        thumbnailDataByPhotoPath.reserveCapacity(thumbnailRecords.count)
-        for thumbnailRecord in thumbnailRecords {
-            let fileURL = backupFolderURL
-                .appendingPathComponent("thumbnails", isDirectory: true)
-                .appendingPathComponent(thumbnailRecord.fileName)
-            guard FileManager.default.fileExists(atPath: fileURL.path) else {
-                throw BackupError.missingFile("thumbnails/\(thumbnailRecord.fileName)")
-            }
-            thumbnailDataByPhotoPath[thumbnailRecord.photoFilePath] = try Data(contentsOf: fileURL)
-        }
 
         let context = ModelContext(modelContainer)
         try clearExistingData(in: context)
@@ -409,15 +722,21 @@ final class BackupService {
         var index = 0
         while index < thumbnailRecords.count {
             let endIndex = min(index + thumbnailChunkSize, thumbnailRecords.count)
-            let thumbnailContext = ModelContext(modelContainer)
-            for record in thumbnailRecords[index..<endIndex] {
-                guard let imageData = thumbnailDataByPhotoPath[record.photoFilePath] else {
-                    throw BackupError.invalidBackup("Missing thumbnail data for \(record.photoFilePath)")
+            try autoreleasepool {
+                let thumbnailContext = ModelContext(modelContainer)
+                for record in thumbnailRecords[index..<endIndex] {
+                    let fileURL = backupFolderURL
+                        .appendingPathComponent("thumbnails", isDirectory: true)
+                        .appendingPathComponent(record.fileName)
+                    guard FileManager.default.fileExists(atPath: fileURL.path) else {
+                        throw BackupError.missingFile("thumbnails/\(record.fileName)")
+                    }
+                    let imageData = try Data(contentsOf: fileURL, options: .mappedIfSafe)
+                    let thumbnail = PhotoThumbnail(photoFilePath: record.photoFilePath, imageData: imageData)
+                    thumbnailContext.insert(thumbnail)
                 }
-                let thumbnail = PhotoThumbnail(photoFilePath: record.photoFilePath, imageData: imageData)
-                thumbnailContext.insert(thumbnail)
+                try thumbnailContext.save()
             }
-            try thumbnailContext.save()
             index = endIndex
         }
 
@@ -452,12 +771,70 @@ final class BackupService {
 
     private func createBackupFolder(in destinationFolderURL: URL) throws -> URL {
         let formatter = DateFormatter()
-        formatter.dateFormat = "yyyy-MM-dd_HH-mm-ss"
+        formatter.dateFormat = "yyyyMMdd_HH-mm"
         let timestamp = formatter.string(from: Date())
-        let folderName = "PhotoMgrBackup_\(timestamp)"
+        let folderName = "\(timestamp)_PhotoMgrBackup"
         let backupFolderURL = destinationFolderURL.appendingPathComponent(folderName, isDirectory: true)
         try FileManager.default.createDirectory(at: backupFolderURL, withIntermediateDirectories: true)
         return backupFolderURL
+    }
+
+    private func createBackupStagingRoot() throws -> URL {
+        guard let appSupportURL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else {
+            throw BackupError.invalidBackup("Unable to locate application support directory")
+        }
+
+        let stagingRootURL = appSupportURL
+            .appendingPathComponent("BackupStaging", isDirectory: true)
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: stagingRootURL, withIntermediateDirectories: true)
+        return stagingRootURL
+    }
+
+    private func writeThumbnailsAndBuildRecords(
+        in thumbnailsFolderURL: URL,
+        context: ModelContext,
+        progressHandler: BackupProgressHandler?
+    ) throws -> [PhotoThumbnailRecord] {
+        let fetchChunkSize = 200
+        var fetchOffset = 0
+        var fileIndex = 0
+        var records: [PhotoThumbnailRecord] = []
+
+        progressHandler?("Writing thumbnail files...")
+
+        while true {
+            var descriptor = FetchDescriptor<PhotoThumbnail>(
+                sortBy: [SortDescriptor(\PhotoThumbnail.photoFilePath)]
+            )
+            descriptor.fetchOffset = fetchOffset
+            descriptor.fetchLimit = fetchChunkSize
+
+            let batch = try context.fetch(descriptor)
+            if batch.isEmpty {
+                break
+            }
+
+            try autoreleasepool {
+                records.reserveCapacity(records.count + batch.count)
+                for thumbnail in batch {
+                    let fileName = "thumb_\(fileIndex).bin"
+                    let fileURL = thumbnailsFolderURL.appendingPathComponent(fileName)
+                    try thumbnail.imageData.write(to: fileURL, options: .atomic)
+                    records.append(PhotoThumbnailRecord(photoFilePath: thumbnail.photoFilePath, fileName: fileName))
+                    fileIndex += 1
+                    if fileIndex.isMultiple(of: 500) {
+                        progressHandler?("Writing thumbnail files... \(fileIndex) written")
+                    }
+                }
+            }
+
+            fetchOffset += batch.count
+        }
+
+        progressHandler?("Thumbnail files complete: \(fileIndex)")
+
+        return records
     }
 
     private func writeJSON<T: Encodable>(_ value: T, to url: URL) throws {

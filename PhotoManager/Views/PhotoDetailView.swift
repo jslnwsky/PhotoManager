@@ -156,18 +156,18 @@ struct MetadataSection: View {
 
 struct LocationSection: View {
     let photo: Photo
-    @State private var region: MKCoordinateRegion
+    @State private var position: MapCameraPosition
     
     init(photo: Photo) {
         self.photo = photo
         
         if let location = photo.location {
-            _region = State(initialValue: MKCoordinateRegion(
+            _position = State(initialValue: .region(MKCoordinateRegion(
                 center: location.coordinate,
                 span: MKCoordinateSpan(latitudeDelta: 0.1, longitudeDelta: 0.1)
-            ))
+            )))
         } else {
-            _region = State(initialValue: MKCoordinateRegion())
+            _position = State(initialValue: .automatic)
         }
     }
     
@@ -177,11 +177,14 @@ struct LocationSection: View {
                 .font(.headline)
             
             if let location = photo.location {
-                Map(position: .constant(.region(region))) {
+                Map(position: $position) {
                     Marker("Photo Location", coordinate: location.coordinate)
                         .tint(.red)
                 }
                 .mapStyle(.standard)
+                .mapControls {
+                    MapPitchToggle()
+                }
                 .frame(height: 200)
                 .cornerRadius(12)
                 

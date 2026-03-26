@@ -32,7 +32,7 @@ actor IndexingService {
                 
                 // Save periodically to make photos visible in UI
                 if photosProcessed % 50 == 0 {
-                    try? await self.modelContext.save()
+                    try? self.modelContext.save()
                 }
             } progressHandler: { photosFound in
                 // Progress updates continuously as photos are found

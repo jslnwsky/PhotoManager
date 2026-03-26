@@ -6,6 +6,7 @@ struct FoldersView: View {
     private enum FolderPickerAction {
         case scan
         case backup
+        case backupDestination
         case restore
     }
 
@@ -16,6 +17,7 @@ struct FoldersView: View {
     @State private var showingFolderPicker = false
     @State private var activeFolderPicker: FolderPickerAction?
     @State private var pendingRestoreFolderURL: URL?
+    @State private var pendingRestorePreview: BackupService.BackupPreview?
     @State private var showingRestoreConfirmation = false
 
     var iCloudFolders: [Folder] {
@@ -29,6 +31,10 @@ struct FoldersView: View {
 
     var virtualFolders: [Folder] {
         folders.filter { $0.parentFolder == nil && $0.source == .virtual }
+    }
+
+    private var preferredHourLabel: String {
+        String(format: "%02d:00", vm.preferredBackupHour)
     }
 
     var body: some View {
@@ -106,6 +112,73 @@ struct FoldersView: View {
                             .foregroundStyle(.green)
                             .font(.caption)
                     }
+                }
+
+                Section("Backup Automation") {
+                    Toggle("Enable Scheduled Backups", isOn: Binding(
+                        get: { vm.backupAutomationEnabled },
+                        set: { newValue in
+                            vm.backupAutomationEnabled = newValue
+                            if newValue {
+                                BackupAutomationCoordinator.scheduleNextIfNeeded()
+                            } else {
+                                BackupAutomationCoordinator.cancelScheduled()
+                            }
+                        }
+                    ))
+
+                    Picker("Frequency", selection: Binding(
+                        get: { vm.backupFrequency },
+                        set: { newValue in
+                            vm.backupFrequency = newValue
+                            if vm.backupAutomationEnabled {
+                                BackupAutomationCoordinator.scheduleNextIfNeeded()
+                            }
+                        }
+                    )) {
+                        ForEach(BackupAutomationSettingsStore.BackupFrequency.allCases, id: \.rawValue) { frequency in
+                            Text(frequency.displayName).tag(frequency)
+                        }
+                    }
+                    .pickerStyle(.menu)
+
+                    Stepper(value: Binding(
+                        get: { vm.preferredBackupHour },
+                        set: { newValue in
+                            vm.preferredBackupHour = newValue
+                            if vm.backupAutomationEnabled {
+                                BackupAutomationCoordinator.scheduleNextIfNeeded()
+                            }
+                        }
+                    ), in: 0...23) {
+                        Text("Preferred Time: \(preferredHourLabel)")
+                    }
+
+                    Button(vm.hasStoredBackupDestination ? "Change Backup Destination" : "Set Backup Destination") {
+                        activeFolderPicker = .backupDestination
+                        showingFolderPicker = true
+                    }
+                    .disabled(vm.isBusy)
+
+                    if let destinationName = vm.backupDestinationDisplayName {
+                        Label("Destination: \(destinationName)", systemImage: "checkmark.circle")
+                            .font(.caption)
+                            .foregroundStyle(.green)
+                    } else {
+                        Label("No backup destination set", systemImage: "exclamationmark.circle")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+
+                    Button("Run Backup Now") {
+                        if vm.hasStoredBackupDestination {
+                            vm.startBackup(container: modelContext.container)
+                        } else {
+                            activeFolderPicker = .backup
+                            showingFolderPicker = true
+                        }
+                    }
+                    .disabled(vm.isBusy)
                 }
 
                 if vm.hasPendingRestoreAcceptance {
@@ -249,7 +322,27 @@ struct FoldersView: View {
                         Label("Add Folder", systemImage: "folder.badge.plus")
                     }
                 }
-                ToolbarItem(placement: .navigationBarLeading) {
+                ToolbarItemGroup(placement: .navigationBarLeading) {
+                    Button {
+                        if vm.hasStoredBackupDestination {
+                            vm.startBackup(container: modelContext.container)
+                        } else {
+                            activeFolderPicker = .backup
+                            showingFolderPicker = true
+                        }
+                    } label: {
+                        Image(systemName: "externaldrive.badge.plus")
+                    }
+                    .disabled(vm.isBusy)
+
+                    Button {
+                        activeFolderPicker = .restore
+                        showingFolderPicker = true
+                    } label: {
+                        Image(systemName: "arrow.counterclockwise.circle")
+                    }
+                    .disabled(vm.isBusy)
+
                     Menu {
                         Button {
                             if let url = vm.storedRootURL { vm.startScan(rootURL: url, container: modelContext.container) }
@@ -293,8 +386,12 @@ struct FoldersView: View {
                         Divider()
 
                         Button {
-                            activeFolderPicker = .backup
-                            showingFolderPicker = true
+                            if vm.hasStoredBackupDestination {
+                                vm.startBackup(container: modelContext.container)
+                            } else {
+                                activeFolderPicker = .backup
+                                showingFolderPicker = true
+                            }
                         } label: {
                             Label("Backup Data", systemImage: "externaldrive.badge.plus")
                         }
@@ -333,9 +430,29 @@ struct FoldersView: View {
                     if accessing { url.stopAccessingSecurityScopedResource() }
                 case .backup:
                     vm.startBackup(destinationFolderURL: url, container: modelContext.container)
+                case .backupDestination:
+                    let accessing = url.startAccessingSecurityScopedResource()
+                    vm.saveBackupDestinationBookmark(for: url)
+                    if accessing { url.stopAccessingSecurityScopedResource() }
+                    if vm.backupAutomationEnabled {
+                        BackupAutomationCoordinator.scheduleNextIfNeeded()
+                    }
                 case .restore:
-                    pendingRestoreFolderURL = url
-                    showingRestoreConfirmation = true
+                    let accessing = url.startAccessingSecurityScopedResource()
+                    defer {
+                        if accessing { url.stopAccessingSecurityScopedResource() }
+                    }
+
+                    do {
+                        let preview = try vm.loadRestorePreview(backupFolderURL: url, container: modelContext.container)
+                        pendingRestoreFolderURL = url
+                        pendingRestorePreview = preview
+                        showingRestoreConfirmation = true
+                    } catch {
+                        pendingRestoreFolderURL = nil
+                        pendingRestorePreview = nil
+                        vm.restoreError = error.localizedDescription
+                    }
                 case .none:
                     break
                 }
@@ -343,14 +460,23 @@ struct FoldersView: View {
             .alert("Restore backup?", isPresented: $showingRestoreConfirmation) {
                 Button("Cancel", role: .cancel) {
                     pendingRestoreFolderURL = nil
+                    pendingRestorePreview = nil
                 }
                 Button("Restore", role: .destructive) {
                     guard let url = pendingRestoreFolderURL else { return }
                     vm.startRestore(backupFolderURL: url, container: modelContext.container)
                     pendingRestoreFolderURL = nil
+                    pendingRestorePreview = nil
                 }
             } message: {
-                Text("This will fully replace all current app data.")
+                if let preview = pendingRestorePreview {
+                    Text("Folder: \(preview.folderName)\nApp version: \(preview.appVersion)\n\nThis will fully replace all current app data.")
+                } else {
+                    Text("This will fully replace all current app data.")
+                }
+            }
+            .task {
+                vm.refreshBackupDestinationState()
             }
         }
     }

@@ -3,6 +3,8 @@ import SwiftData
 
 @main
 struct PhotoManagerApp: App {
+    @Environment(\.scenePhase) private var scenePhase
+
     var sharedModelContainer: ModelContainer = {
         let schema = Schema([
             Photo.self,
@@ -28,10 +30,29 @@ struct PhotoManagerApp: App {
             }
         }
     }()
+
+    init() {
+        let container = sharedModelContainer
+        BackupAutomationCoordinator.configure {
+            container
+        }
+        BackupAutomationCoordinator.registerBackgroundTask()
+        BackupAutomationCoordinator.scheduleNextIfNeeded()
+    }
     
     var body: some Scene {
         WindowGroup {
             ContentView()
+                .task {
+                    await BackupAutomationCoordinator.runIfDueInForeground(modelContainer: sharedModelContainer)
+                }
+                .onChange(of: scenePhase) { _, newPhase in
+                    guard newPhase == .active else { return }
+                    BackupAutomationCoordinator.scheduleNextIfNeeded()
+                    Task {
+                        await BackupAutomationCoordinator.runIfDueInForeground(modelContainer: sharedModelContainer)
+                    }
+                }
         }
         .modelContainer(sharedModelContainer)
     }

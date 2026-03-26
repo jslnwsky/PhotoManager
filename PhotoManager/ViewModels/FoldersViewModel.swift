@@ -4,6 +4,11 @@ import Photos
 
 @Observable
 class FoldersViewModel {
+    enum EnrichmentTriggerSource: String {
+        case postICloudScan = "post_iCloud_scan"
+        case postPhotosLibraryScan = "post_photos_library_scan"
+    }
+
     var isScanning = false
     var scanProgress: Double = 0.0
     var scanError: String? = nil
@@ -28,11 +33,36 @@ class FoldersViewModel {
     var restoreStatus: String = ""
     var restoreError: String? = nil
     private var pendingSafetySnapshotPath: String? = nil
+
+    var backupAutomationEnabled: Bool = BackupAutomationSettingsStore.automationEnabled {
+        didSet {
+            BackupAutomationSettingsStore.automationEnabled = backupAutomationEnabled
+        }
+    }
+
+    var preferredBackupHour: Int = BackupAutomationSettingsStore.preferredHour {
+        didSet {
+            BackupAutomationSettingsStore.preferredHour = preferredBackupHour
+        }
+    }
+
+    var backupFrequency: BackupAutomationSettingsStore.BackupFrequency = BackupAutomationSettingsStore.backupFrequency {
+        didSet {
+            BackupAutomationSettingsStore.backupFrequency = backupFrequency
+        }
+    }
+
+    var backupDestinationDisplayName: String?
+
+    var hasStoredBackupDestination: Bool {
+        backupDestinationDisplayName != nil
+    }
     
     // Background enrichment pipeline status
     var enrichmentPhase: EnrichmentPhase = .idle
     var enrichmentProgress: Double = 0.0
     var enrichmentDetail: String = ""
+    var lastEnrichmentTrigger: String = ""
 
     // Retained to prevent ModelActor deallocation during scan
     private var photoLibraryService: PhotoLibraryService? = nil
@@ -64,12 +94,24 @@ class FoldersViewModel {
         case geocoding = "Geocoding locations..."
     }
 
+    init() {
+        refreshBackupDestinationState()
+    }
+
     var storedRootURL: URL? {
         guard let data = UserDefaults.standard.data(forKey: "rootFolderBookmark") else { return nil }
         var isStale = false
         let url = try? URL(resolvingBookmarkData: data, bookmarkDataIsStale: &isStale)
         if isStale { UserDefaults.standard.removeObject(forKey: "rootFolderBookmark") }
         return isStale ? nil : url
+    }
+
+    var storedBackupDestinationURL: URL? {
+        BackupAutomationSettingsStore.resolveDestinationURL()
+    }
+
+    func refreshBackupDestinationState() {
+        backupDestinationDisplayName = storedBackupDestinationURL?.lastPathComponent
     }
 
     func saveBookmark(for url: URL) {
@@ -79,6 +121,25 @@ class FoldersViewModel {
             relativeTo: nil
         ) {
             UserDefaults.standard.set(bookmark, forKey: "rootFolderBookmark")
+        }
+    }
+
+    func saveBackupDestinationBookmark(for url: URL) {
+        let accessing = url.startAccessingSecurityScopedResource()
+        defer { if accessing { url.stopAccessingSecurityScopedResource() } }
+
+        do {
+            let bookmark = try url.bookmarkData(
+                options: .minimalBookmark,
+                includingResourceValuesForKeys: nil,
+                relativeTo: nil
+            )
+            BackupAutomationSettingsStore.destinationBookmarkData = bookmark
+            refreshBackupDestinationState()
+            backupError = nil
+            backupStatus = "Backup destination set: \(backupDestinationDisplayName ?? url.lastPathComponent)"
+        } catch {
+            backupError = "Failed to save bookmark: \(error.localizedDescription)"
         }
     }
 
@@ -100,7 +161,11 @@ class FoldersViewModel {
             }
             // Auto-trigger background enrichment pipeline
             if error == nil {
-                await self.runEnrichmentPipeline(container: container, rootURL: rootURL)
+                await self.runEnrichmentPipeline(
+                    container: container,
+                    rootURL: rootURL,
+                    source: .postICloudScan
+                )
             }
         }
     }
@@ -150,7 +215,11 @@ class FoldersViewModel {
             }
             // Auto-trigger background enrichment pipeline
             if scanSucceeded {
-                await self.runEnrichmentPipeline(container: container, rootURL: nil)
+                await self.runEnrichmentPipeline(
+                    container: container,
+                    rootURL: nil,
+                    source: .postPhotosLibraryScan
+                )
             }
         }
     }
@@ -211,12 +280,21 @@ class FoldersViewModel {
         isBackingUp = true
         backupError = nil
         backupStatus = "Preparing backup..."
+        saveBackupDestinationBookmark(for: destinationFolderURL)
 
         Task {
             let accessing = destinationFolderURL.startAccessingSecurityScopedResource()
             do {
                 let backupService = BackupService(modelContainer: container)
-                let backupFolderURL = try backupService.createBackup(in: destinationFolderURL)
+                let backupFolderURL = try backupService.createBackupUsingLocalStaging(
+                    in: destinationFolderURL,
+                    progressHandler: { status in
+                        Task { @MainActor in
+                            self.backupStatus = status
+                        }
+                    }
+                )
+                BackupAutomationSettingsStore.lastBackupAt = Date()
                 await MainActor.run {
                     self.isBackingUp = false
                     self.backupStatus = "Backup created: \(backupFolderURL.lastPathComponent)"
@@ -230,6 +308,19 @@ class FoldersViewModel {
             }
             if accessing { destinationFolderURL.stopAccessingSecurityScopedResource() }
         }
+    }
+
+    func startBackup(container: ModelContainer) {
+        guard let destination = storedBackupDestinationURL else {
+            backupError = "Set a backup destination first"
+            return
+        }
+        startBackup(destinationFolderURL: destination, container: container)
+    }
+
+    func loadRestorePreview(backupFolderURL: URL, container: ModelContainer) throws -> BackupService.BackupPreview {
+        let backupService = BackupService(modelContainer: container)
+        return try backupService.loadBackupPreview(from: backupFolderURL)
     }
 
     func startRestore(backupFolderURL: URL, container: ModelContainer) {
@@ -316,7 +407,7 @@ class FoldersViewModel {
 
     // MARK: - Background Enrichment Pipeline
     
-    func runEnrichmentPipeline(container: ModelContainer, rootURL: URL?) async {
+    func runEnrichmentPipeline(container: ModelContainer, rootURL: URL?, source: EnrichmentTriggerSource) async {
         if isScanning {
             print("⏭️ Skipping enrichment pipeline while iCloud scan is running")
             return
@@ -329,8 +420,14 @@ class FoldersViewModel {
             print("⏭️ Enrichment pipeline already running")
             return
         }
-        print("🔄 Starting background enrichment pipeline...")
-        
+        let trigger = source.rawValue
+        let stackPreview = Thread.callStackSymbols.prefix(8).joined(separator: "\n")
+        print("🔄 Starting background enrichment pipeline (trigger=\(trigger))")
+        print("🔎 Enrichment trigger call stack preview:\n\(stackPreview)")
+        await MainActor.run {
+            self.lastEnrichmentTrigger = trigger
+        }
+
         // Phase 1: Build search index
         await MainActor.run {
             self.enrichmentPhase = .buildingSearchIndex

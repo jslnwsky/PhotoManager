@@ -68,6 +68,16 @@ class FoldersViewModel {
     private var pendingSafetySnapshotPath: String? = nil
     var rootFolderMetrics: [FolderSource: RootFolderMetrics] = RootFolderMetricsStore.load()
     private var rootMetricsRefreshTask: Task<Void, Never>?
+    
+    // Cancellation tasks for long-running operations
+    private var scanTask: Task<Void, Never>?
+    private var enrichTask: Task<Void, Never>?
+    private var photoScanTask: Task<Void, Never>?
+    private var geocodeTask: Task<Void, Never>?
+    private var fileSizeRecalcTask: Task<Void, Never>?
+    private var backupTask: Task<Void, Never>?
+    private var restoreTask: Task<Void, Never>?
+    private var hashBackfillTask: Task<Void, Never>?
 
     var backupAutomationEnabled: Bool = BackupAutomationSettingsStore.automationEnabled {
         didSet {
@@ -181,69 +191,86 @@ class FoldersViewModel {
 
     func startScan(rootURL: URL, container: ModelContainer) {
         guard !isAnyPipelineLocked else { return }
+        
+        // Cancel any existing scan
+        scanTask?.cancel()
+        
         isScanning = true
         scanError = nil
         scanProgress = 0.0
-        Task {
+        scanTask = Task {
             let accessing = rootURL.startAccessingSecurityScopedResource()
             let service = IndexingService(modelContainer: container)
             let error = await service.startIndexing(rootURL: rootURL) { progress in
-                Task { @MainActor in self.scanProgress = progress }
+                Task { @MainActor in 
+                    if !Task.isCancelled {
+                        self.scanProgress = progress
+                    }
+                }
             }
             if accessing { rootURL.stopAccessingSecurityScopedResource() }
             await MainActor.run {
-                self.isScanning = false
-                self.scanError = error
-                if error == nil {
-                    self.scheduleRootFolderMetricsRefresh(container: container)
+                if !Task.isCancelled {
+                    self.isScanning = false
+                    self.scanError = error
                 }
-            }
-            // Auto-trigger background enrichment pipeline
-            if error == nil {
-                await self.runEnrichmentPipeline(
-                    container: container,
-                    rootURL: rootURL,
-                    source: .postICloudScan
-                )
+                self.scanTask = nil
             }
         }
     }
 
     func startEnrich(rootURL: URL?, container: ModelContainer) {
         guard !isAnyPipelineLocked else { return }
+        
+        // Cancel any existing enrich
+        enrichTask?.cancel()
+        
         isEnriching = true
         enrichError = nil
         enrichProgress = 0.0
-        Task {
+        enrichTask = Task {
             let accessing = rootURL?.startAccessingSecurityScopedResource() ?? false
             let service = IndexingService(modelContainer: container)
             let error = await service.enrichMetadata(rootURL: rootURL) { progress in
-                Task { @MainActor in self.enrichProgress = progress }
+                Task { @MainActor in 
+                    if !Task.isCancelled {
+                        self.enrichProgress = progress
+                    }
+                }
             }
             if accessing { rootURL?.stopAccessingSecurityScopedResource() }
             await MainActor.run {
-                self.isEnriching = false
-                self.enrichError = error
+                if !Task.isCancelled {
+                    self.isEnriching = false
+                    self.enrichError = error
+                }
+                self.enrichTask = nil
             }
         }
     }
 
     func startPhotoLibraryScan(container: ModelContainer) {
         guard !isAnyPipelineLocked else { return }
+        
+        // Cancel any existing photo scan
+        photoScanTask?.cancel()
+        
         isScanningPhotos = true
         photoScanError = nil
         photoScanProgress = 0.0
-        Task {
+        photoScanTask = Task {
             let service = PhotoLibraryService(modelContainer: container)
             await MainActor.run { self.photoLibraryService = service }
             var scanSucceeded = false
             do {
                 let result = try await service.scanPhotosLibrary()
                 await MainActor.run {
-                    self.isScanningPhotos = false
-                    self.photoLibraryService = nil
-                    print("Photos Library scan complete: \(result.photoCount) photos in \(result.albumCount) albums")
-                    self.scheduleRootFolderMetricsRefresh(container: container)
+                    if !Task.isCancelled {
+                        self.isScanningPhotos = false
+                        self.photoLibraryService = nil
+                        print("Photos Library scan complete: \(result.photoCount) photos in \(result.albumCount) albums")
+                        self.scheduleRootFolderMetricsRefresh(container: container)
+                    }
                 }
                 scanSucceeded = true
             } catch {
@@ -254,12 +281,15 @@ class FoldersViewModel {
                 }
             }
             // Auto-trigger background enrichment pipeline
-            if scanSucceeded {
+            if scanSucceeded && !Task.isCancelled {
                 await self.runEnrichmentPipeline(
                     container: container,
                     rootURL: nil,
                     source: .postPhotosLibraryScan
                 )
+            }
+            await MainActor.run {
+                self.photoScanTask = nil
             }
         }
     }
@@ -757,5 +787,68 @@ class FoldersViewModel {
                 }
             }
         }
+    }
+    
+    // MARK: - Cancellation Methods
+    
+    func cancelScan() {
+        scanTask?.cancel()
+        scanTask = nil
+        isScanning = false
+        scanProgress = 0.0
+        scanError = "Scan cancelled by user"
+    }
+    
+    func cancelEnrich() {
+        enrichTask?.cancel()
+        enrichTask = nil
+        isEnriching = false
+        enrichProgress = 0.0
+        enrichError = "Metadata enrichment cancelled by user"
+    }
+    
+    func cancelPhotoScan() {
+        photoScanTask?.cancel()
+        photoScanTask = nil
+        isScanningPhotos = false
+        photoScanError = "Photos Library scan cancelled by user"
+    }
+    
+    func cancelGeocoding() {
+        geocodeTask?.cancel()
+        geocodeTask = nil
+        isGeocoding = false
+        geocodeProgress = 0.0
+        geocodeError = "Geocoding cancelled by user"
+    }
+    
+    func cancelFileSizeRecalc() {
+        fileSizeRecalcTask?.cancel()
+        fileSizeRecalcTask = nil
+        isRecalculatingFileSizes = false
+        fileSizeRecalcProgress = 0.0
+        fileSizeRecalcError = "File size recalculation cancelled by user"
+    }
+    
+    func cancelBackup() {
+        backupTask?.cancel()
+        backupTask = nil
+        isBackingUp = false
+        backupError = "Backup cancelled by user"
+    }
+    
+    func cancelRestore() {
+        restoreTask?.cancel()
+        restoreTask = nil
+        isRestoring = false
+        restoreError = "Restore cancelled by user"
+    }
+    
+    func cancelHashBackfill() {
+        hashBackfillTask?.cancel()
+        hashBackfillTask = nil
+        enrichmentPhase = .idle
+        enrichmentProgress = 0.0
+        enrichmentDetail = "Hash backfill cancelled by user"
     }
 }

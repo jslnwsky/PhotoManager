@@ -1,20 +1,111 @@
 import Foundation
 import SwiftData
+import SwiftUI
+
+/// Notification posted when search index is rebuilt
+extension Notification.Name {
+    static let searchIndexDidRebuild = Notification.Name("searchIndexDidRebuild")
+}
 
 /// Lightweight search index for fast photo searching without loading full Photo objects
 @MainActor
-class SearchIndexService: ObservableObject {
+final class SearchIndexService: ObservableObject {
     static let shared = SearchIndexService()
     
-    @Published private(set) var isIndexing = false
-    @Published private(set) var indexProgress: Double = 0.0
+    @Published var searchIndex: [PhotoSearchRecord] = []
+    @Published var isIndexing = false
+    @Published var indexProgress: Double = 0.0
+    @Published var lastIndexUpdate: Date?
+    @Published var isRebuildingIndex = false
+    @Published var rebuildProgress: Double = 0.0
+    @Published var rebuildMessage: String = ""
     
-    private var searchIndex: [PhotoSearchRecord] = []
-    private var lastIndexUpdate: Date?
+    private var rebuildTask: Task<Void, Never>?
     
-    private init() {} // Singleton
+    private init() {
+        // Don't auto-rebuild on initialization - let the UI handle it
+        // This ensures proper progress feedback for users
+    }
     
-    struct PhotoSearchRecord: Identifiable {
+    /// Check if index needs rebuilding and do it if necessary
+    private func checkAndRebuildIndexIfNeeded() async {
+        // Small delay to allow app to initialize
+        try? await Task.sleep(nanoseconds: 100_000_000) // 0.1 second
+        
+        if searchIndex.isEmpty {
+            print("🔍 Search index empty on startup, rebuilding from database...")
+            // Don't auto-rebuild here - let the UI handle it with proper progress
+            // This prevents background rebuild without user feedback
+        } else {
+            print("🔍 Search index found with \(searchIndex.count) records")
+        }
+    }
+    
+    /// Rebuild search index from database
+    func rebuildIndexFromDatabase(modelContext: ModelContext? = nil) async {
+        guard !isRebuildingIndex else { return }
+        
+        await MainActor.run {
+            isRebuildingIndex = true
+            rebuildProgress = 0.0
+            rebuildMessage = "Building search index..."
+        }
+        
+        let startTime = Date()
+        
+        if let context = modelContext {
+            // Use provided model context
+            await buildIndexWithProgress(modelContext: context)
+        } else {
+            // Try to get model context from app - this is a limitation
+            // For now, we'll need the caller to provide the context
+            print("🔍 No model context provided for rebuild")
+            await MainActor.run {
+                isRebuildingIndex = false
+                rebuildMessage = "Model context required"
+            }
+            return
+        }
+        
+        await MainActor.run {
+            isRebuildingIndex = false
+            rebuildProgress = 1.0
+            rebuildMessage = "Search index ready"
+            
+            let duration = Date().timeIntervalSince(startTime)
+            print("🔍 Search index rebuilt with \(searchIndex.count) records in \(duration)s")
+            
+            // Post notification to update smart folder counts
+            NotificationCenter.default.post(name: .searchIndexDidRebuild, object: nil)
+        }
+    }
+    
+    /// Build index with progress tracking for rebuild
+    private func buildIndexWithProgress(modelContext: ModelContext) async {
+        // Monitor the existing buildIndex progress
+        let progressTask = Task {
+            while isIndexing {
+                await MainActor.run {
+                    rebuildProgress = indexProgress
+                }
+                try? await Task.sleep(nanoseconds: 100_000_000) // 0.1 second
+            }
+        }
+        
+        // Start the actual index building
+        await buildIndex(modelContext: modelContext)
+        
+        // Cancel progress monitoring
+        progressTask.cancel()
+    }
+    
+    /// Manual rebuild trigger with model context
+    func manualRebuildIndex(modelContext: ModelContext) async {
+        searchIndex = [] // Clear existing index
+        await rebuildIndexFromDatabase(modelContext: modelContext)
+    }
+    
+    struct PhotoSearchRecord: Identifiable, Equatable {
         let id: PersistentIdentifier
         let fileName: String
         let description: String?
@@ -86,38 +177,22 @@ class SearchIndexService: ObservableObject {
             allRecords.reserveCapacity(totalCount)
             
             let batchSize = 1000
-            var processedCount = 0
-            var lastFilePath: String? = nil
+            var offset = 0
             
-            // Process in batches using cursor-based pagination (much faster than offset)
-            var shouldContinue = true
-            while shouldContinue {
+            while offset < totalCount {
                 autoreleasepool {
-                    var descriptor: FetchDescriptor<Photo>
-                    
-                    if let lastPath = lastFilePath {
-                        // Cursor-based: fetch photos with filePath > lastPath
-                        descriptor = FetchDescriptor<Photo>(
-                            predicate: #Predicate<Photo> { photo in
-                                photo.filePath > lastPath
-                            },
-                            sortBy: [SortDescriptor(\Photo.filePath)]
-                        )
-                    } else {
-                        // First batch: no filter
-                        descriptor = FetchDescriptor<Photo>(
-                            sortBy: [SortDescriptor(\Photo.filePath)]
-                        )
-                    }
-                    
+                    var descriptor = FetchDescriptor<Photo>(
+                        sortBy: [SortDescriptor(\Photo.captureDate, order: .reverse), SortDescriptor(\Photo.filePath)]
+                    )
                     descriptor.fetchLimit = batchSize
+                    descriptor.fetchOffset = offset
                     descriptor.relationshipKeyPathsForPrefetching = [\.photoTags]
                     
                     do {
                         let batch = try modelContext.fetch(descriptor)
                         
                         if batch.isEmpty {
-                            shouldContinue = false
+                            return
                         } else {
                             for photo in batch {
                                 let tagNames = photo.tags.map { $0.name }
@@ -139,15 +214,14 @@ class SearchIndexService: ObservableObject {
                                 allRecords.append(record)
                             }
                             
-                            processedCount += batch.count
-                            lastFilePath = batch.last?.filePath
-                            indexProgress = Double(processedCount) / Double(totalCount)
+                            offset += batch.count
+                            indexProgress = Double(offset) / Double(totalCount)
                             
-                            print("🔍 Processed \(processedCount)/\(totalCount) photos (\(Int(indexProgress * 100))%)")
+                            print("🔍 Processed \(offset)/\(totalCount) photos (\(Int(indexProgress * 100))%)")
                         }
                     } catch {
                         print("❌ Error fetching batch: \(error)")
-                        shouldContinue = false
+                        return
                     }
                 }
             }
@@ -247,6 +321,38 @@ class SearchIndexService: ObservableObject {
         searchIndex = records
         lastIndexUpdate = Date()
         print("🔍 Search index set with \(records.count) records")
+    }
+    
+    /// Evaluate a smart folder rule and return matching photo IDs
+    func evaluateSmartFolderRule(_ rule: SmartFolderRule, maxResults: Int = 200) -> (ids: [PersistentIdentifier], totalCount: Int) {
+        return search(
+            query: rule.query,
+            locationQuery: rule.locationQuery,
+            cameraQuery: rule.cameraQuery,
+            dateRange: convertDateRange(rule.dateRange),
+            source: convertSourceFilter(rule.sourceFilter),
+            selectedTagNames: rule.selectedTagNames,
+            maxResults: maxResults
+        )
+    }
+    
+    private func convertDateRange(_ range: SmartFolderDateRange) -> DateRange {
+        switch range {
+        case .all: return .all
+        case .today: return .today
+        case .thisWeek: return .week
+        case .thisMonth: return .month
+        case .thisYear: return .year
+        }
+    }
+    
+    private func convertSourceFilter(_ filter: SourceFilter) -> SearchFilters.SourceFilter {
+        switch filter {
+        case .all: return .all
+        case .iCloudDrive: return .iCloudDrive
+        case .iCloudPhotos: return .photosLibrary
+        case .localPhotos: return .all // Fallback for now
+        }
     }
     
     /// Check if index needs rebuilding

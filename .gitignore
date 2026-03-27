@@ -49,3 +49,8 @@ Thumbs.db
 # Playground
 timeline.xctimeline
 playground.xcworkspace
+
+# Project tracking
+ProjectTracking.xlsx
+~$ProjectTracking.xlsx
+projectplan.md

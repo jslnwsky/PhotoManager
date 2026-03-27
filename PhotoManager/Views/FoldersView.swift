@@ -52,7 +52,7 @@ struct FoldersView: View {
     }
     
     var body: some View {
-        NavigationStack {
+        let baseView = NavigationStack {
             List {
                 // Progress sections
                 if vm.isScanning {
@@ -330,178 +330,179 @@ struct FoldersView: View {
                         }
                     }
                 }
-                .navigationTitle("Folders")
-                .toolbar {
-                    ToolbarItem(placement: .primaryAction) {
-                        Button { showingAddFolder = true } label: {
-                            Label("Add Folder", systemImage: "folder.badge.plus")
-                        }
-                    }
-                    ToolbarItemGroup(placement: .navigationBarLeading) {
-                        Button {
-                            showingBackupAutomation = true
-                        } label: {
-                            Image(systemName: "externaldrive.badge.plus")
-                        }
-                        .disabled(vm.isBusy)
-                        
-                        Button {
-                            activeFolderPicker = .restore
-                            showingFolderPicker = true
-                        } label: {
-                            Image(systemName: "arrow.counterclockwise.circle")
-                        }
-                        .disabled(vm.isBusy)
-                        
-                        Button {
-                            showingToolsMenu = true
-                        } label: {
-                            Label("Tools", systemImage: "ellipsis.circle")
-                        }
+            }
+            .navigationTitle("Folders")
+            .toolbar {
+                ToolbarItem(placement: .primaryAction) {
+                    Button { showingAddFolder = true } label: {
+                        Label("Add Folder", systemImage: "folder.badge.plus")
                     }
                 }
-                .sheet(isPresented: $showingAddFolder) {
-                    AddFolderView()
-                }
-                .sheet(isPresented: $showingAddVirtualFolder) {
-                    AddVirtualFolderView()
-                }
-                .sheet(isPresented: $showingBackupAutomation) {
-                    BackupAutomationView()
-                }
-                .fileImporter(
-                    isPresented: $showingFolderPicker,
-                    allowedContentTypes: [.folder],
-                    allowsMultipleSelection: false
-                ) { result in
-                    showingFolderPicker = false
-                    guard let url = try? result.get().first else { return }
-                    let action = activeFolderPicker
-                    activeFolderPicker = nil
+                ToolbarItemGroup(placement: .navigationBarLeading) {
+                    Button {
+                        showingBackupAutomation = true
+                    } label: {
+                        Image(systemName: "externaldrive.badge.plus")
+                    }
+                    .disabled(vm.isBusy)
                     
-                    switch action {
-                    case .scan:
-                        let accessing = url.startAccessingSecurityScopedResource()
-                        vm.saveBookmark(for: url)
-                        pendingScanURL = url
-                        showingScanConfirmation = true
-                        if accessing { url.stopAccessingSecurityScopedResource() }
-                    case .backup:
-                        vm.startBackup(destinationFolderURL: url, container: modelContext.container)
-                    case .backupDestination:
-                        let accessing = url.startAccessingSecurityScopedResource()
-                        vm.saveBackupDestinationBookmark(for: url)
-                        if accessing { url.stopAccessingSecurityScopedResource() }
-                        if vm.backupAutomationEnabled {
-                            BackupAutomationCoordinator.scheduleNextIfNeeded()
-                        }
-                    case .restore:
-                        let accessing = url.startAccessingSecurityScopedResource()
-                        defer {
-                            if accessing { url.stopAccessingSecurityScopedResource() }
-                        }
-                        
-                        do {
-                            let preview = try vm.loadRestorePreview(backupFolderURL: url, container: modelContext.container)
-                            pendingRestoreFolderURL = url
-                            pendingRestorePreview = preview
-                            showingRestoreConfirmation = true
-                        } catch {
-                            pendingRestoreFolderURL = nil
-                            pendingRestorePreview = nil
-                            vm.restoreError = error.localizedDescription
-                        }
-                    case .none:
-                        break
+                    Button {
+                        activeFolderPicker = .restore
+                        showingFolderPicker = true
+                    } label: {
+                        Image(systemName: "arrow.counterclockwise.circle")
+                    }
+                    .disabled(vm.isBusy)
+                    
+                    Button {
+                        showingToolsMenu = true
+                    } label: {
+                        Label("Tools", systemImage: "ellipsis.circle")
                     }
                 }
-                .alert("Restore backup?", isPresented: $showingRestoreConfirmation) {
-                    Button("Cancel", role: .cancel) {
-                        pendingRestoreFolderURL = nil
-                        pendingRestorePreview = nil
-                    }
-                    Button("Restore", role: .destructive) {
-                        guard let url = pendingRestoreFolderURL else { return }
-                        vm.startRestore(backupFolderURL: url, container: modelContext.container)
-                        pendingRestoreFolderURL = nil
-                        pendingRestorePreview = nil
-                    }
-                } message: {
-                    if let preview = pendingRestorePreview {
-                        Text("Folder: \(preview.folderName)\nApp version: \(preview.appVersion)\n\nThis will fully replace all current app data.")
-                    } else {
-                        Text("This will fully replace all current app data.")
-                    }
-                }
-                .task {
-                    vm.refreshBackupDestinationState()
-                    vm.scheduleRootFolderMetricsRefresh(container: modelContext.container)
-                }
             }
-            .alert("Start iCloud Drive Scan?", isPresented: $showingScanConfirmation) {
-                Button("Cancel", role: .cancel) {
-                    pendingScanURL = nil
+        }
+        return baseView
+        .sheet(isPresented: $showingAddFolder) {
+            AddFolderView()
+        }
+        .sheet(isPresented: $showingAddVirtualFolder) {
+            AddVirtualFolderView()
+        }
+        .sheet(isPresented: $showingBackupAutomation) {
+            BackupAutomationView()
+        }
+        .fileImporter(
+            isPresented: $showingFolderPicker,
+            allowedContentTypes: [.folder],
+            allowsMultipleSelection: false
+        ) { result in
+            showingFolderPicker = false
+            guard let url = try? result.get().first else { return }
+            let action = activeFolderPicker
+            activeFolderPicker = nil
+            
+            switch action {
+            case .scan:
+                let accessing = url.startAccessingSecurityScopedResource()
+                vm.saveBookmark(for: url)
+                pendingScanURL = url
+                showingScanConfirmation = true
+                if accessing { url.stopAccessingSecurityScopedResource() }
+            case .backup:
+                vm.startBackup(destinationFolderURL: url, container: modelContext.container)
+            case .backupDestination:
+                let accessing = url.startAccessingSecurityScopedResource()
+                vm.saveBackupDestinationBookmark(for: url)
+                if accessing { url.stopAccessingSecurityScopedResource() }
+                if vm.backupAutomationEnabled {
+                    BackupAutomationCoordinator.scheduleNextIfNeeded()
                 }
-                Button("Scan") {
-                    guard let url = pendingScanURL else { return }
-                    vm.startScan(rootURL: url, container: modelContext.container)
-                    pendingScanURL = nil
+            case .restore:
+                let accessing = url.startAccessingSecurityScopedResource()
+                defer {
+                    if accessing { url.stopAccessingSecurityScopedResource() }
                 }
-            } message: {
-                Text("This will scan all files in your iCloud Drive folder and may take a long time for large libraries.")
+                
+                do {
+                    let preview = try vm.loadRestorePreview(backupFolderURL: url, container: modelContext.container)
+                    pendingRestoreFolderURL = url
+                    pendingRestorePreview = preview
+                    showingRestoreConfirmation = true
+                } catch {
+                    pendingRestoreFolderURL = nil
+                    pendingRestorePreview = nil
+                    vm.restoreError = error.localizedDescription
+                }
+            case .none:
+                break
             }
-            .alert("Fetch Full Metadata?", isPresented: $showingEnrichConfirmation) {
-                Button("Cancel", role: .cancel) {
-                    pendingEnrichURL = nil
-                }
-                Button("Fetch") {
-                    guard let url = pendingEnrichURL else { return }
-                    vm.startEnrich(rootURL: url, container: modelContext.container)
-                    pendingEnrichURL = nil
-                }
-            } message: {
-                Text("This will download and analyze full metadata for all photos and may take considerable time.")
+        }
+        .alert("Restore backup?", isPresented: $showingRestoreConfirmation) {
+            Button("Cancel", role: .cancel) {
+                pendingRestoreFolderURL = nil
+                pendingRestorePreview = nil
             }
-            .alert("Scan Photos Library?", isPresented: $showingPhotoScanConfirmation) {
-                Button("Cancel", role: .cancel) { }
-                Button("Scan") {
-                    vm.startPhotoLibraryScan(container: modelContext.container)
-                }
-            } message: {
-                Text("This will scan your entire Photos Library and may take a long time for large libraries.")
+            Button("Restore", role: .destructive) {
+                guard let url = pendingRestoreFolderURL else { return }
+                vm.startRestore(backupFolderURL: url, container: modelContext.container)
+                pendingRestoreFolderURL = nil
+                pendingRestorePreview = nil
             }
-            .alert("Start Geocoding?", isPresented: $showingGeocodeConfirmation) {
-                Button("Cancel", role: .cancel) { }
-                Button("Geocode") {
-                    vm.startGeocoding(container: modelContext.container)
-                }
-            } message: {
-                Text("This will look up location names for all photos with GPS coordinates and may require network access.")
+        } message: {
+            if let preview = pendingRestorePreview {
+                Text("Folder: \(preview.folderName)\nApp version: \(preview.appVersion)\n\nThis will fully replace all current app data.")
+            } else {
+                Text("This will fully replace all current app data.")
             }
-            .alert("Recalculate File Sizes?", isPresented: $showingFileSizeRecalcConfirmation) {
-                Button("Cancel", role: .cancel) { }
-                Button("Recalculate") {
-                    vm.startRecalculatePhotosLibraryFileSizes(container: modelContext.container)
-                }
-            } message: {
-                Text("This will recalculate file sizes for all Photos Library items and may take a long time.")
+        }
+        .task {
+            vm.refreshBackupDestinationState()
+            vm.scheduleRootFolderMetricsRefresh(container: modelContext.container)
+        }
+        .alert("Start iCloud Drive Scan?", isPresented: $showingScanConfirmation) {
+            Button("Cancel", role: .cancel) {
+                pendingScanURL = nil
             }
-            .alert("Create Backup?", isPresented: $showingBackupConfirmation) {
-                Button("Cancel", role: .cancel) { }
-                Button("Backup") {
-                    vm.startBackup(container: modelContext.container)
-                }
-            } message: {
-                Text("This will create a complete backup of your photo data and may take considerable time.")
+            Button("Scan") {
+                guard let url = pendingScanURL else { return }
+                vm.startScan(rootURL: url, container: modelContext.container)
+                pendingScanURL = nil
             }
-            .alert("Generate Photo Hashes?", isPresented: $showingHashBackfillConfirmation) {
-                Button("Cancel", role: .cancel) { }
-                Button("Generate") {
-                    vm.startHashBackfill(container: modelContext.container)
-                }
-            } message: {
-                Text("This will generate unique hashes for all photos to detect duplicates and may take a long time.")
+        } message: {
+            Text("This will scan all files in your iCloud Drive folder and may take a long time for large libraries.")
+        }
+        .alert("Fetch Full Metadata?", isPresented: $showingEnrichConfirmation) {
+            Button("Cancel", role: .cancel) {
+                pendingEnrichURL = nil
             }
+            Button("Fetch") {
+                guard let url = pendingEnrichURL else { return }
+                vm.startEnrich(rootURL: url, container: modelContext.container)
+                pendingEnrichURL = nil
+            }
+        } message: {
+            Text("This will download and analyze full metadata for all photos and may take considerable time.")
+        }
+        .alert("Scan Photos Library?", isPresented: $showingPhotoScanConfirmation) {
+            Button("Cancel", role: .cancel) { }
+            Button("Scan") {
+                vm.startPhotoLibraryScan(container: modelContext.container)
+            }
+        } message: {
+            Text("This will scan your entire Photos Library and may take a long time for large libraries.")
+        }
+        .alert("Start Geocoding?", isPresented: $showingGeocodeConfirmation) {
+            Button("Cancel", role: .cancel) { }
+            Button("Geocode") {
+                vm.startGeocoding(container: modelContext.container)
+            }
+        } message: {
+            Text("This will look up location names for all photos with GPS coordinates and may require network access.")
+        }
+        .alert("Recalculate File Sizes?", isPresented: $showingFileSizeRecalcConfirmation) {
+            Button("Cancel", role: .cancel) { }
+            Button("Recalculate") {
+                vm.startRecalculatePhotosLibraryFileSizes(container: modelContext.container)
+            }
+        } message: {
+            Text("This will recalculate file sizes for all Photos Library items and may take a long time.")
+        }
+        .alert("Create Backup?", isPresented: $showingBackupConfirmation) {
+            Button("Cancel", role: .cancel) { }
+            Button("Backup") {
+                vm.startBackup(container: modelContext.container)
+            }
+        } message: {
+            Text("This will create a complete backup of your photo data and may take considerable time.")
+        }
+        .alert("Generate Photo Hashes?", isPresented: $showingHashBackfillConfirmation) {
+            Button("Cancel", role: .cancel) { }
+            Button("Generate") {
+                vm.startHashBackfill(container: modelContext.container)
+            }
+        } message: {
+            Text("This will generate unique hashes for all photos to detect duplicates and may take a long time.")
         }
         .overlay {
             // Full-screen overlay for search index rebuild

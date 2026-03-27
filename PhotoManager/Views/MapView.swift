@@ -115,6 +115,8 @@ struct BulkMapTagPickerView: View {
 // MARK: - UIViewRepresentable map with clustering
 
 struct ClusteredMapView: UIViewRepresentable {
+    private static let thumbnailAnnotationReuseID = "PhotoThumbnailAnnotationView"
+
     struct SelectionBounds {
         let minLat: Double
         let maxLat: Double
@@ -138,6 +140,10 @@ struct ClusteredMapView: UIViewRepresentable {
         mapView.showsUserLocation = true
         mapView.register(PhotoAnnotationView.self,
                          forAnnotationViewWithReuseIdentifier: MKMapViewDefaultAnnotationViewReuseIdentifier)
+        mapView.register(
+            PhotoThumbnailAnnotationView.self,
+            forAnnotationViewWithReuseIdentifier: Self.thumbnailAnnotationReuseID
+        )
         // Use default cluster annotation view for better performance
         mapView.register(MKMarkerAnnotationView.self,
                          forAnnotationViewWithReuseIdentifier: MKMapViewDefaultClusterAnnotationViewReuseIdentifier)
@@ -213,6 +219,9 @@ struct ClusteredMapView: UIViewRepresentable {
     }
 
     final class Coordinator: NSObject, MKMapViewDelegate, UIGestureRecognizerDelegate {
+        private let thumbnailZoomThreshold: CLLocationDegrees = 0.35
+        private let thumbnailVisibleLimit = 300
+
         var onSelectPhoto: (Photo) -> Void
         var onAreaSelectionChanged: (SelectionBounds?) -> Void
         var onCenterChanged: ((MKCoordinateRegion) -> Void)?
@@ -226,6 +235,9 @@ struct ClusteredMapView: UIViewRepresentable {
         private var selectionBoxView: UIView?
         private var selectionStartPoint: CGPoint?
         weak var modelContext: ModelContext?
+        private var thumbnailImageCache: [String: UIImage] = [:]
+        private var missingThumbnailPaths: Set<String> = []
+        private var lastThumbnailMode: Bool?
 
         init(
             onSelectPhoto: @escaping (Photo) -> Void,
@@ -262,6 +274,14 @@ struct ClusteredMapView: UIViewRepresentable {
         func mapView(_ mapView: MKMapView, regionDidChangeAnimated animated: Bool) {
             if isSelectionMode { return }
             let newRegion = mapView.region
+
+            let thumbnailMode = shouldUseThumbnailMode(on: mapView)
+            if lastThumbnailMode != thumbnailMode {
+                lastThumbnailMode = thumbnailMode
+                reloadPhotoAnnotations(on: mapView)
+            } else {
+                refreshAnnotationStyles(on: mapView)
+            }
 
             if let last = lastRegion, !isSignificantRegionChange(from: last, to: newRegion) {
                 return
@@ -362,13 +382,24 @@ struct ClusteredMapView: UIViewRepresentable {
             if annotation is MKUserLocation { return nil }
 
             if let photo = annotation as? PhotoAnnotation {
-                let view = mapView.dequeueReusableAnnotationView(
-                    withIdentifier: MKMapViewDefaultAnnotationViewReuseIdentifier,
-                    for: photo
-                ) as? MKMarkerAnnotationView
-                if let view {
-                    configureMarker(view, for: photo)
-                    return view
+                if shouldUseThumbnailMode(on: mapView) {
+                    let view = mapView.dequeueReusableAnnotationView(
+                        withIdentifier: ClusteredMapView.thumbnailAnnotationReuseID,
+                        for: photo
+                    ) as? PhotoThumbnailAnnotationView
+                    if let view {
+                        configureThumbnailView(view, for: photo)
+                        return view
+                    }
+                } else {
+                    let view = mapView.dequeueReusableAnnotationView(
+                        withIdentifier: MKMapViewDefaultAnnotationViewReuseIdentifier,
+                        for: photo
+                    ) as? MKMarkerAnnotationView
+                    if let view {
+                        configureMarker(view, for: photo, on: mapView)
+                        return view
+                    }
                 }
             }
 
@@ -378,7 +409,7 @@ struct ClusteredMapView: UIViewRepresentable {
                     for: cluster
                 ) as? MKMarkerAnnotationView
                 if let view {
-                    configureMarker(view, for: cluster)
+                    configureMarker(view, for: cluster, on: mapView)
                     return view
                 }
             }
@@ -387,10 +418,34 @@ struct ClusteredMapView: UIViewRepresentable {
         }
 
         func refreshAnnotationStyles(on mapView: MKMapView) {
+            var shouldReloadPhotoViews = false
+            let useThumbnailMode = shouldUseThumbnailMode(on: mapView)
             for annotation in mapView.annotations where !(annotation is MKUserLocation) {
-                if let markerView = mapView.view(for: annotation) as? MKMarkerAnnotationView {
-                    configureMarker(markerView, for: annotation)
+                if let photo = annotation as? PhotoAnnotation {
+                    if useThumbnailMode {
+                        if let thumbnailView = mapView.view(for: photo) as? PhotoThumbnailAnnotationView {
+                            configureThumbnailView(thumbnailView, for: photo)
+                        } else {
+                            shouldReloadPhotoViews = true
+                        }
+                    } else {
+                        if let markerView = mapView.view(for: photo) as? MKMarkerAnnotationView {
+                            configureMarker(markerView, for: photo, on: mapView)
+                        } else {
+                            shouldReloadPhotoViews = true
+                        }
+                    }
+                    continue
                 }
+
+                if let cluster = annotation as? MKClusterAnnotation,
+                   let markerView = mapView.view(for: cluster) as? MKMarkerAnnotationView {
+                    configureMarker(markerView, for: cluster, on: mapView)
+                }
+            }
+
+            if shouldReloadPhotoViews {
+                reloadPhotoAnnotations(on: mapView)
             }
         }
 
@@ -410,11 +465,17 @@ struct ClusteredMapView: UIViewRepresentable {
             return movedMeters > (viewportMeters * 0.25)
         }
 
-        private func configureMarker(_ view: MKMarkerAnnotationView, for annotation: MKAnnotation) {
+        private func configureMarker(_ view: MKMarkerAnnotationView, for annotation: MKAnnotation, on mapView: MKMapView) {
             if let photo = annotation as? PhotoAnnotation {
                 let selected = isSelectionMode && selectedPhotoPaths.contains(photo.photoFilePath)
-                view.markerTintColor = selected ? .systemOrange : .systemBlue
-                view.glyphImage = UIImage(systemName: selected ? "checkmark.circle.fill" : "camera.fill")
+                if selected {
+                    view.markerTintColor = .systemOrange
+                    view.glyphImage = UIImage(systemName: "checkmark.circle.fill")
+                    return
+                }
+
+                view.markerTintColor = .systemBlue
+                view.glyphImage = UIImage(systemName: "camera.fill")
                 return
             }
 
@@ -423,9 +484,76 @@ struct ClusteredMapView: UIViewRepresentable {
                 let selectedCount = selectedPhotoPaths.intersection(paths).count
                 let hasSelection = isSelectionMode && selectedCount > 0
                 view.markerTintColor = hasSelection ? .systemOrange : .systemBlue
+                view.glyphImage = nil
                 view.glyphTintColor = .white
                 return
             }
+        }
+
+        private func shouldUseThumbnailMode(on mapView: MKMapView) -> Bool {
+            guard !isSelectionMode else { return false }
+            let span = max(mapView.region.span.latitudeDelta, mapView.region.span.longitudeDelta)
+            guard span <= thumbnailZoomThreshold else { return false }
+
+            let renderedPhotoViews = mapView.annotations.reduce(into: 0) { count, annotation in
+                guard annotation is PhotoAnnotation else { return }
+                if mapView.view(for: annotation) != nil {
+                    count += 1
+                }
+            }
+
+            if renderedPhotoViews > 0 {
+                return renderedPhotoViews <= thumbnailVisibleLimit
+            }
+
+            let visibleSet = mapView.annotations(in: mapView.visibleMapRect)
+            let visiblePhotoAnnotations = visibleSet.reduce(into: 0) { count, item in
+                if item is PhotoAnnotation {
+                    count += 1
+                }
+            }
+            return visiblePhotoAnnotations <= thumbnailVisibleLimit
+        }
+
+        private func configureThumbnailView(_ view: PhotoThumbnailAnnotationView, for photo: PhotoAnnotation) {
+            let selected = isSelectionMode && selectedPhotoPaths.contains(photo.photoFilePath)
+            let image = thumbnailImage(for: photo.photoFilePath)
+            view.configure(image: image, isSelected: selected)
+        }
+
+        private func reloadPhotoAnnotations(on mapView: MKMapView) {
+            let photos = mapView.annotations.compactMap { $0 as? PhotoAnnotation }
+            guard !photos.isEmpty else { return }
+            mapView.removeAnnotations(photos)
+            mapView.addAnnotations(photos)
+        }
+
+        private func thumbnailImage(for filePath: String) -> UIImage? {
+            if let cached = thumbnailImageCache[filePath] {
+                return cached
+            }
+            if missingThumbnailPaths.contains(filePath) {
+                return nil
+            }
+            guard let context = modelContext else {
+                return nil
+            }
+
+            let targetPath = filePath
+            let descriptor = FetchDescriptor<PhotoThumbnail>(
+                predicate: #Predicate { thumb in
+                    thumb.photoFilePath == targetPath
+                }
+            )
+
+            guard let record = try? context.fetch(descriptor).first,
+                  let image = UIImage(data: record.imageData) else {
+                missingThumbnailPaths.insert(filePath)
+                return nil
+            }
+
+            thumbnailImageCache[filePath] = image
+            return image
         }
 
         private func photoPaths(from annotation: MKAnnotation) -> [String] {
@@ -457,6 +585,76 @@ final class PhotoAnnotationView: MKMarkerAnnotationView {
     }
 
     required init?(coder: NSCoder) { nil }
+}
+
+final class PhotoThumbnailAnnotationView: MKAnnotationView {
+    private let imageView = UIImageView()
+    private let placeholderView = UIImageView(image: UIImage(systemName: "camera.fill"))
+    private let selectionBadge = UIImageView(image: UIImage(systemName: "checkmark.circle.fill"))
+
+    override init(annotation: MKAnnotation?, reuseIdentifier: String?) {
+        super.init(annotation: annotation, reuseIdentifier: reuseIdentifier)
+        setupView()
+    }
+
+    required init?(coder: NSCoder) { nil }
+
+    override func prepareForReuse() {
+        super.prepareForReuse()
+        imageView.image = nil
+        selectionBadge.isHidden = true
+    }
+
+    func configure(image: UIImage?, isSelected: Bool) {
+        if let image {
+            imageView.isHidden = false
+            imageView.image = image
+            placeholderView.isHidden = true
+            backgroundColor = .clear
+            layer.borderColor = (isSelected ? UIColor.systemOrange : UIColor.white).cgColor
+            layer.borderWidth = isSelected ? 3 : 2
+        } else {
+            imageView.isHidden = true
+            placeholderView.isHidden = false
+            backgroundColor = isSelected ? .systemOrange : .systemBlue
+            layer.borderColor = UIColor.clear.cgColor
+            layer.borderWidth = 0
+        }
+
+        selectionBadge.isHidden = !isSelected
+    }
+
+    private func setupView() {
+        frame = CGRect(x: 0, y: 0, width: 36, height: 36)
+        centerOffset = CGPoint(x: 0, y: -18)
+        canShowCallout = false
+        collisionMode = .rectangle
+        displayPriority = .defaultHigh
+
+        layer.cornerRadius = 8
+        layer.masksToBounds = true
+
+        imageView.frame = bounds
+        imageView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        imageView.contentMode = .scaleAspectFill
+        imageView.clipsToBounds = true
+        addSubview(imageView)
+
+        placeholderView.frame = bounds
+        placeholderView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        placeholderView.contentMode = .center
+        placeholderView.tintColor = .white
+        addSubview(placeholderView)
+
+        selectionBadge.frame = CGRect(x: bounds.width - 15, y: -3, width: 18, height: 18)
+        selectionBadge.autoresizingMask = [.flexibleLeftMargin, .flexibleBottomMargin]
+        selectionBadge.tintColor = .systemOrange
+        selectionBadge.backgroundColor = .white
+        selectionBadge.layer.cornerRadius = 9
+        selectionBadge.layer.masksToBounds = true
+        selectionBadge.isHidden = true
+        addSubview(selectionBadge)
+    }
 }
 
 // MARK: - Main MapView

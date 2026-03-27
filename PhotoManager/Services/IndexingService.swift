@@ -2,6 +2,7 @@ import Foundation
 import SwiftData
 import Photos
 import UIKit
+import CryptoKit
 
 @ModelActor
 actor IndexingService {
@@ -151,6 +152,9 @@ actor IndexingService {
                 keywords: metadata.keywords ?? [],
                 originalMetadataJSON: metadataJSON.flatMap { String(data: $0, encoding: .utf8) },
                 hasFullMetadata: true,
+                contentHash: computeFileContentHash(at: url),
+                hashAlgorithm: "sha256_raw",
+                hashComputedAt: Date(),
                 folder: folder
             )
             modelContext.insert(photo)
@@ -304,6 +308,10 @@ actor IndexingService {
                             self.modelContext.insert(thumbRecord)
                         }
                     }
+
+                    photo.contentHash = self.computeDataContentHash(imageData)
+                    photo.hashAlgorithm = "sha256_raw"
+                    photo.hashComputedAt = Date()
                     
                     // Extract EXIF metadata from image data
                     do {
@@ -347,6 +355,96 @@ actor IndexingService {
             }
         }
         return result
+    }
+
+    func backfillContentHashes(rootURL: URL?, progressHandler: @escaping (Double) -> Void) async -> String? {
+        do {
+            let descriptor = FetchDescriptor<Photo>(
+                predicate: #Predicate { photo in
+                    photo.contentHash == nil
+                }
+            )
+            let pending = try modelContext.fetch(descriptor)
+            guard !pending.isEmpty else {
+                progressHandler(1.0)
+                return nil
+            }
+
+            let total = pending.count
+            let accessing = rootURL?.startAccessingSecurityScopedResource() ?? false
+            defer {
+                if accessing {
+                    rootURL?.stopAccessingSecurityScopedResource()
+                }
+            }
+
+            for (index, photo) in pending.enumerated() {
+                if let hash = await computeContentHash(for: photo) {
+                    photo.contentHash = hash
+                    photo.hashAlgorithm = "sha256_raw"
+                    photo.hashComputedAt = Date()
+                }
+
+                if (index + 1) % 100 == 0 {
+                    try? modelContext.save()
+                }
+                progressHandler(Double(index + 1) / Double(total))
+            }
+
+            try? modelContext.save()
+            return nil
+        } catch {
+            return error.localizedDescription
+        }
+    }
+
+    private func computeContentHash(for photo: Photo) async -> String? {
+        if PhotoAssetHelper.isPhotosLibraryPhoto(photo) {
+            guard let data = await loadPhotosAssetData(for: photo) else { return nil }
+            return computeDataContentHash(data)
+        }
+
+        guard let url = photo.fileURL else { return nil }
+        return computeFileContentHash(at: url)
+    }
+
+    private func loadPhotosAssetData(for photo: Photo) async -> Data? {
+        guard let asset = PhotoAssetHelper.fetchAsset(for: photo) else { return nil }
+        let options = PHImageRequestOptions()
+        options.isSynchronous = false
+        options.isNetworkAccessAllowed = true
+        options.deliveryMode = .highQualityFormat
+
+        return await withCheckedContinuation { continuation in
+            PHImageManager.default().requestImageDataAndOrientation(for: asset, options: options) { imageData, _, _, _ in
+                continuation.resume(returning: imageData)
+            }
+        }
+    }
+
+    private func computeDataContentHash(_ data: Data) -> String {
+        let digest = SHA256.hash(data: data)
+        return digest.map { String(format: "%02x", $0) }.joined()
+    }
+
+    private func computeFileContentHash(at url: URL) -> String? {
+        do {
+            let handle = try FileHandle(forReadingFrom: url)
+            defer {
+                try? handle.close()
+            }
+
+            var hasher = SHA256()
+            while true {
+                let chunk = try handle.read(upToCount: 1_048_576) ?? Data()
+                if chunk.isEmpty { break }
+                hasher.update(data: chunk)
+            }
+            let digest = hasher.finalize()
+            return digest.map { String(format: "%02x", $0) }.joined()
+        } catch {
+            return nil
+        }
     }
 
     private func assetFileSize(_ asset: PHAsset) -> Int64 {

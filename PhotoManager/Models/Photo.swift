@@ -27,6 +27,9 @@ final class Photo {
     var keywords: [String]
     var originalMetadataJSON: String?
     var hasFullMetadata: Bool
+    var contentHash: String?
+    var hashAlgorithm: String?
+    var hashComputedAt: Date?
     var city: String?
     var country: String?
     var folders: [Folder]
@@ -58,6 +61,9 @@ final class Photo {
         keywords: [String] = [],
         originalMetadataJSON: String? = nil,
         hasFullMetadata: Bool = false,
+        contentHash: String? = nil,
+        hashAlgorithm: String? = nil,
+        hashComputedAt: Date? = nil,
         city: String? = nil,
         country: String? = nil,
         folder: Folder? = nil
@@ -85,6 +91,9 @@ final class Photo {
         self.keywords = keywords
         self.originalMetadataJSON = originalMetadataJSON
         self.hasFullMetadata = hasFullMetadata
+        self.contentHash = contentHash
+        self.hashAlgorithm = hashAlgorithm
+        self.hashComputedAt = hashComputedAt
         self.city = city
         self.country = country
         self.folders = folder.map { [$0] } ?? []

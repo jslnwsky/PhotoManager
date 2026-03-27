@@ -4,6 +4,39 @@ import Photos
 
 @Observable
 class FoldersViewModel {
+    struct RootFolderMetrics: Codable {
+        let totalPhotosRecursive: Int
+        let duplicatePhotosRecursive: Int
+        let uniquePhotosRecursive: Int
+        let ungeotaggedPhotosRecursive: Int
+        let updatedAt: Date
+    }
+
+    private enum RootFolderMetricsStore {
+        private static let storageKey = "folders.root.metrics.v1"
+
+        static func load() -> [FolderSource: RootFolderMetrics] {
+            guard let data = UserDefaults.standard.data(forKey: storageKey),
+                  let raw = try? JSONDecoder().decode([String: RootFolderMetrics].self, from: data) else {
+                return [:]
+            }
+
+            var parsed: [FolderSource: RootFolderMetrics] = [:]
+            for (key, value) in raw {
+                if let source = FolderSource(rawValue: key) {
+                    parsed[source] = value
+                }
+            }
+            return parsed
+        }
+
+        static func save(_ metrics: [FolderSource: RootFolderMetrics]) {
+            let raw = Dictionary(uniqueKeysWithValues: metrics.map { ($0.key.rawValue, $0.value) })
+            guard let data = try? JSONEncoder().encode(raw) else { return }
+            UserDefaults.standard.set(data, forKey: storageKey)
+        }
+    }
+
     enum EnrichmentTriggerSource: String {
         case postICloudScan = "post_iCloud_scan"
         case postPhotosLibraryScan = "post_photos_library_scan"
@@ -33,6 +66,8 @@ class FoldersViewModel {
     var restoreStatus: String = ""
     var restoreError: String? = nil
     private var pendingSafetySnapshotPath: String? = nil
+    var rootFolderMetrics: [FolderSource: RootFolderMetrics] = RootFolderMetricsStore.load()
+    private var rootMetricsRefreshTask: Task<Void, Never>?
 
     var backupAutomationEnabled: Bool = BackupAutomationSettingsStore.automationEnabled {
         didSet {
@@ -91,6 +126,7 @@ class FoldersViewModel {
         case idle = ""
         case buildingSearchIndex = "Building search index..."
         case extractingMetadata = "Extracting photo metadata..."
+        case hashing = "Computing content hashes..."
         case geocoding = "Geocoding locations..."
     }
 
@@ -158,6 +194,9 @@ class FoldersViewModel {
             await MainActor.run {
                 self.isScanning = false
                 self.scanError = error
+                if error == nil {
+                    self.scheduleRootFolderMetricsRefresh(container: container)
+                }
             }
             // Auto-trigger background enrichment pipeline
             if error == nil {
@@ -204,6 +243,7 @@ class FoldersViewModel {
                     self.isScanningPhotos = false
                     self.photoLibraryService = nil
                     print("Photos Library scan complete: \(result.photoCount) photos in \(result.albumCount) albums")
+                    self.scheduleRootFolderMetricsRefresh(container: container)
                 }
                 scanSucceeded = true
             } catch {
@@ -244,6 +284,9 @@ class FoldersViewModel {
             await MainActor.run {
                 self.isGeocoding = false
                 self.geocodeError = error
+                if error == nil {
+                    self.scheduleRootFolderMetricsRefresh(container: container)
+                }
             }
         }
     }
@@ -348,6 +391,7 @@ class FoldersViewModel {
                     self.isRestoring = false
                     self.pendingSafetySnapshotPath = safetySnapshotURL.path
                     self.restoreStatus = "Restore complete. Verify data, then Accept Restore or Rollback."
+                    self.scheduleRootFolderMetricsRefresh(container: container)
                 }
             } catch {
                 await MainActor.run {
@@ -394,6 +438,7 @@ class FoldersViewModel {
                     self.pendingSafetySnapshotPath = nil
                     self.isRestoring = false
                     self.restoreStatus = "Rollback complete. Safety snapshot deleted."
+                    self.scheduleRootFolderMetricsRefresh(container: container)
                 }
             } catch {
                 await MainActor.run {
@@ -468,8 +513,26 @@ class FoldersViewModel {
         let reindexContext = ModelContext(container)
         await SearchIndexService.shared.buildIndex(modelContext: reindexContext)
         print("✅ Search index rebuilt with metadata")
+
+        // Phase 3: Content hash backfill for exact duplicate detection
+        await MainActor.run {
+            self.enrichmentPhase = .hashing
+            self.enrichmentProgress = 0.0
+            self.enrichmentDetail = "Computing content hashes..."
+        }
+        let hashError = await enrichService.backfillContentHashes(rootURL: rootURL) { progress in
+            Task { @MainActor in
+                self.enrichmentProgress = progress
+                self.enrichmentDetail = "Computing content hashes... \(Int(progress * 100))%"
+            }
+        }
+        if let error = hashError {
+            print("⚠️ Content hash backfill error: \(error)")
+        } else {
+            print("✅ Content hash backfill complete")
+        }
         
-        // Phase 3: Geocoding
+        // Phase 4: Geocoding
         await MainActor.run {
             self.enrichmentPhase = .geocoding
             self.enrichmentProgress = 0.0
@@ -502,8 +565,114 @@ class FoldersViewModel {
             self.enrichmentPhase = .idle
             self.enrichmentProgress = 0.0
             self.enrichmentDetail = ""
+            self.scheduleRootFolderMetricsRefresh(container: container)
         }
         print("🎉 Background enrichment pipeline complete")
+    }
+
+    func rootMetricsSummary(for source: FolderSource) -> String? {
+        guard let metrics = rootFolderMetrics[source], metrics.totalPhotosRecursive > 0 else {
+            return nil
+        }
+
+        let ratio = Double(metrics.duplicatePhotosRecursive) / Double(max(metrics.totalPhotosRecursive, 1))
+        let percent = Int((ratio * 100).rounded())
+
+        return "\(metrics.totalPhotosRecursive.formatted(.number)) photos • \(metrics.duplicatePhotosRecursive.formatted(.number)) dupes (\(percent)%) • \(metrics.uniquePhotosRecursive.formatted(.number)) unique • \(metrics.ungeotaggedPhotosRecursive.formatted(.number)) ungeotagged"
+    }
+
+    func scheduleRootFolderMetricsRefresh(container: ModelContainer) {
+        rootMetricsRefreshTask?.cancel()
+        rootMetricsRefreshTask = Task { [weak self] in
+            guard let self else { return }
+            await self.refreshRootFolderMetrics(container: container)
+        }
+    }
+
+    private func refreshRootFolderMetrics(container: ModelContainer) async {
+        let context = ModelContext(container)
+
+        do {
+            let folders = try context.fetch(FetchDescriptor<Folder>())
+            let photos = try context.fetch(FetchDescriptor<Photo>())
+
+            let roots = folders.filter { $0.parentFolder == nil }
+            let pathToPhoto: [String: Photo] = Dictionary(uniqueKeysWithValues: photos.map { ($0.filePath, $0) })
+
+            let signatureCounts = buildGlobalSignatureCounts(from: photos)
+
+            var computed: [FolderSource: RootFolderMetrics] = [:]
+            let targetSources: [FolderSource] = [.iCloudDrive, .localPhotos, .virtual]
+
+            for source in targetSources {
+                let sourceRoots = roots.filter { $0.source == source }
+                var rootPhotoPaths: Set<String> = []
+                for root in sourceRoots {
+                    collectPhotoPathsRecursive(folder: root, into: &rootPhotoPaths)
+                }
+
+                let total = rootPhotoPaths.count
+                let duplicateCount = rootPhotoPaths.reduce(into: 0) { count, path in
+                    guard let photo = pathToPhoto[path] else { return }
+                    let signature = duplicateSignature(for: photo)
+                    if (signatureCounts[signature] ?? 0) > 1 {
+                        count += 1
+                    }
+                }
+                let unique = max(0, total - duplicateCount)
+                let ungeotagged = rootPhotoPaths.reduce(into: 0) { count, path in
+                    guard let photo = pathToPhoto[path] else { return }
+                    if photo.latitude == nil || photo.longitude == nil {
+                        count += 1
+                    }
+                }
+
+                computed[source] = RootFolderMetrics(
+                    totalPhotosRecursive: total,
+                    duplicatePhotosRecursive: duplicateCount,
+                    uniquePhotosRecursive: unique,
+                    ungeotaggedPhotosRecursive: ungeotagged,
+                    updatedAt: Date()
+                )
+            }
+
+            let computedSnapshot = computed
+            await MainActor.run {
+                self.rootFolderMetrics = computedSnapshot
+                RootFolderMetricsStore.save(computedSnapshot)
+            }
+        } catch {
+            print("Root folder metrics refresh failed: \(error)")
+        }
+    }
+
+    private func collectPhotoPathsRecursive(folder: Folder, into paths: inout Set<String>) {
+        for photo in folder.photos {
+            paths.insert(photo.filePath)
+        }
+        for child in folder.childFolders {
+            collectPhotoPathsRecursive(folder: child, into: &paths)
+        }
+    }
+
+    private func buildGlobalSignatureCounts(from photos: [Photo]) -> [String: Int] {
+        var counts: [String: Int] = [:]
+        for photo in photos {
+            let signature = duplicateSignature(for: photo)
+            counts[signature, default: 0] += 1
+        }
+        return counts
+    }
+
+    private func duplicateSignature(for photo: Photo) -> String {
+        if let contentHash = photo.contentHash, !contentHash.isEmpty {
+            return "hash:\(contentHash)"
+        }
+
+        let captureEpoch = Int(photo.captureDate?.timeIntervalSince1970 ?? 0)
+        let width = photo.width ?? 0
+        let height = photo.height ?? 0
+        return "fallback:\(photo.fileSize)|\(width)x\(height)|\(captureEpoch)"
     }
     
     private func backfillPhotoLocations(container: ModelContainer) async {

@@ -297,6 +297,9 @@ final class BackupService {
         let keywords: [String]
         let originalMetadataJSON: String?
         let hasFullMetadata: Bool
+        let contentHash: String?
+        let hashAlgorithm: String?
+        let hashComputedAt: Date?
         let city: String?
         let country: String?
         let folderPaths: [String]
@@ -414,6 +417,9 @@ final class BackupService {
                     keywords: photo.keywords,
                     originalMetadataJSON: photo.originalMetadataJSON,
                     hasFullMetadata: photo.hasFullMetadata,
+                    contentHash: photo.contentHash,
+                    hashAlgorithm: photo.hashAlgorithm,
+                    hashComputedAt: photo.hashComputedAt,
                     city: photo.city,
                     country: photo.country,
                     folderPaths: photo.folders.map { $0.path }.sorted()
@@ -688,6 +694,9 @@ final class BackupService {
                 keywords: record.keywords,
                 originalMetadataJSON: record.originalMetadataJSON,
                 hasFullMetadata: record.hasFullMetadata,
+                contentHash: record.contentHash,
+                hashAlgorithm: record.hashAlgorithm,
+                hashComputedAt: record.hashComputedAt,
                 city: record.city,
                 country: record.country,
                 folder: nil

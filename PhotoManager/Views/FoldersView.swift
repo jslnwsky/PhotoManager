@@ -502,24 +502,6 @@ struct FoldersView: View {
             } message: {
                 Text("This will generate unique hashes for all photos to detect duplicates and may take a long time.")
             }
-            .sheet(isPresented: $showingToolsMenu) {
-                ToolsMenuView(
-                    vm: vm,
-                    searchService: searchService,
-                    modelContext: modelContext,
-                    showingScanConfirmation: $showingScanConfirmation,
-                    showingPhotoScanConfirmation: $showingPhotoScanConfirmation,
-                    showingEnrichConfirmation: $showingEnrichConfirmation,
-                    showingGeocodeConfirmation: $showingGeocodeConfirmation,
-                    showingFileSizeRecalcConfirmation: $showingFileSizeRecalcConfirmation,
-                    showingHashBackfillConfirmation: $showingHashBackfillConfirmation,
-                    showingBackupConfirmation: $showingBackupConfirmation,
-                    activeFolderPicker: $activeFolderPicker,
-                    showingFolderPicker: $showingFolderPicker,
-                    pendingScanURL: $pendingScanURL,
-                    pendingEnrichURL: $pendingEnrichURL
-                )
-            }
         }
         .overlay {
             // Full-screen overlay for search index rebuild
@@ -554,6 +536,24 @@ struct FoldersView: View {
             if searchService.searchIndex.isEmpty && !searchService.isRebuildingIndex {
                 await searchService.rebuildIndexFromDatabase(modelContext: modelContext)
             }
+        }
+        .sheet(isPresented: $showingToolsMenu) {
+            ToolsMenuView(
+                vm: vm,
+                searchService: searchService,
+                modelContext: modelContext,
+                showingScanConfirmation: $showingScanConfirmation,
+                showingPhotoScanConfirmation: $showingPhotoScanConfirmation,
+                showingEnrichConfirmation: $showingEnrichConfirmation,
+                showingGeocodeConfirmation: $showingGeocodeConfirmation,
+                showingFileSizeRecalcConfirmation: $showingFileSizeRecalcConfirmation,
+                showingHashBackfillConfirmation: $showingHashBackfillConfirmation,
+                showingBackupConfirmation: $showingBackupConfirmation,
+                activeFolderPicker: $activeFolderPicker,
+                showingFolderPicker: $showingFolderPicker,
+                pendingScanURL: $pendingScanURL,
+                pendingEnrichURL: $pendingEnrichURL
+            )
         }
     }
     
@@ -824,7 +824,7 @@ struct FoldersView: View {
             .task {
                 await loadPhotoCount()
             }
-            .onReceive(NotificationCenter.default.publisher(for: .searchIndexDidRebuild)) { _ in
+            .onReceive(NotificationCenter.default.publisher(for: .searchIndexDidChange)) { _ in
                 if folder.isVirtual {
                     Task {
                         await loadPhotoCount()
@@ -931,7 +931,7 @@ struct FolderDetailView: View {
         .task {
             await loadPhotos()
         }
-        .onReceive(NotificationCenter.default.publisher(for: .searchIndexDidRebuild)) { _ in
+        .onReceive(NotificationCenter.default.publisher(for: .searchIndexDidChange)) { _ in
             if folder.isVirtual {
                 Task {
                     await loadPhotos()

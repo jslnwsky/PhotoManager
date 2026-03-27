@@ -107,8 +107,13 @@ struct BulkMapTagPickerView: View {
             }
         }
 
-        try? modelContext.save()
-        dismiss()
+        do {
+            try modelContext.save()
+            SearchIndexService.shared.upsertPhotos(targetPhotos)
+            dismiss()
+        } catch {
+            print("Failed to apply bulk tags: \(error)")
+        }
     }
 }
 

@@ -85,7 +85,7 @@ actor PhotoLibraryService {
             albumCount += 1
             print("💾 Saved All Photos folder to database")
             
-            let newAllPhotos = processAllPhotosCanonical(allAssets, folderPath: "photos://all", startIndex: resumeAllPhotosIndex)
+            let newAllPhotos = await processAllPhotosCanonical(allAssets, folderPath: "photos://all", startIndex: resumeAllPhotosIndex)
             photoCount += newAllPhotos
             print("✅ All Photos complete: \(newAllPhotos) new photos indexed")
         }
@@ -190,7 +190,7 @@ actor PhotoLibraryService {
     }
     
     /// Phase A: Create canonical Photo rows from All Photos only (idempotent via knownPaths)
-    private func processAllPhotosCanonical(_ assets: PHFetchResult<PHAsset>, folderPath: String, startIndex: Int) -> Int {
+    private func processAllPhotosCanonical(_ assets: PHFetchResult<PHAsset>, folderPath: String, startIndex: Int) async -> Int {
         let totalAssets = assets.count
         var totalNewCount = 0
         var totalSkippedCount = 0
@@ -210,6 +210,7 @@ actor PhotoLibraryService {
             
             var chunkNewCount = 0
             var chunkSkippedCount = 0
+            var chunkIndexIDs: [PersistentIdentifier] = []
             for index in startIndex..<endIndex {
                 autoreleasepool {
                     let asset = assets.object(at: index)
@@ -237,12 +238,14 @@ actor PhotoLibraryService {
                     }
                     photo.hasFullMetadata = false
                     chunkContext.insert(photo)
+                    chunkIndexIDs.append(photo.persistentModelID)
                     knownPaths.insert(filePath)
                     chunkNewCount += 1
                 }
             }
             
             try? chunkContext.save()
+            await publishIndexUpserts(for: chunkIndexIDs)
             totalNewCount += chunkNewCount
             totalSkippedCount += chunkSkippedCount
             let chunkDurationMs = Int(Date().timeIntervalSince(chunkStartTime) * 1000)
@@ -255,6 +258,25 @@ actor PhotoLibraryService {
         
         print("    📊 All Photos: \(totalNewCount) new, \(totalSkippedCount) skipped, total=\(totalAssets)")
         return totalNewCount
+    }
+
+    private func publishIndexUpserts(for ids: [PersistentIdentifier]) async {
+        guard !ids.isEmpty else { return }
+
+        let idSet = Set(ids)
+        let container = modelContainer
+
+        await MainActor.run {
+            let context = ModelContext(container)
+            let descriptor = FetchDescriptor<Photo>(
+                predicate: #Predicate { photo in
+                    idSet.contains(photo.persistentModelID)
+                }
+            )
+
+            guard let photos = try? context.fetch(descriptor), !photos.isEmpty else { return }
+            SearchIndexService.shared.upsertPhotos(photos)
+        }
     }
     
     /// Phase B: Link existing canonical photos to album folder memberships only

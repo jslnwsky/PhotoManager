@@ -2,9 +2,9 @@ import Foundation
 import SwiftData
 import SwiftUI
 
-/// Notification posted when search index is rebuilt
+/// Notification posted when search index data changes
 extension Notification.Name {
-    static let searchIndexDidRebuild = Notification.Name("searchIndexDidRebuild")
+    static let searchIndexDidChange = Notification.Name("searchIndexDidChange")
 }
 
 /// Lightweight search index for fast photo searching without loading full Photo objects
@@ -13,6 +13,7 @@ final class SearchIndexService: ObservableObject {
     static let shared = SearchIndexService()
     
     @Published var searchIndex: [PhotoSearchRecord] = []
+    @Published private(set) var indexVersion: Int = 0
     @Published var isIndexing = false
     @Published var indexProgress: Double = 0.0
     @Published var lastIndexUpdate: Date?
@@ -20,25 +21,11 @@ final class SearchIndexService: ObservableObject {
     @Published var rebuildProgress: Double = 0.0
     @Published var rebuildMessage: String = ""
     
-    private var rebuildTask: Task<Void, Never>?
+    private var recordsById: [PersistentIdentifier: PhotoSearchRecord] = [:]
     
     private init() {
         // Don't auto-rebuild on initialization - let the UI handle it
         // This ensures proper progress feedback for users
-    }
-    
-    /// Check if index needs rebuilding and do it if necessary
-    private func checkAndRebuildIndexIfNeeded() async {
-        // Small delay to allow app to initialize
-        try? await Task.sleep(nanoseconds: 100_000_000) // 0.1 second
-        
-        if searchIndex.isEmpty {
-            print("🔍 Search index empty on startup, rebuilding from database...")
-            // Don't auto-rebuild here - let the UI handle it with proper progress
-            // This prevents background rebuild without user feedback
-        } else {
-            print("🔍 Search index found with \(searchIndex.count) records")
-        }
     }
     
     /// Rebuild search index from database
@@ -50,6 +37,9 @@ final class SearchIndexService: ObservableObject {
             rebuildProgress = 0.0
             rebuildMessage = "Building search index..."
         }
+
+        // Give SwiftUI a frame to present the blocking overlay before heavy work begins.
+        await Task.yield()
         
         let startTime = Date()
         
@@ -74,14 +64,13 @@ final class SearchIndexService: ObservableObject {
             
             let duration = Date().timeIntervalSince(startTime)
             print("🔍 Search index rebuilt with \(searchIndex.count) records in \(duration)s")
-            
-            // Post notification to update smart folder counts
-            NotificationCenter.default.post(name: .searchIndexDidRebuild, object: nil)
         }
     }
     
     /// Build index with progress tracking for rebuild
     private func buildIndexWithProgress(modelContext: ModelContext) async {
+        isIndexing = true
+
         // Monitor the existing buildIndex progress
         let progressTask = Task {
             while isIndexing {
@@ -101,8 +90,37 @@ final class SearchIndexService: ObservableObject {
     
     /// Manual rebuild trigger with model context
     func manualRebuildIndex(modelContext: ModelContext) async {
+        recordsById = [:]
         searchIndex = [] // Clear existing index
         await rebuildIndexFromDatabase(modelContext: modelContext)
+    }
+
+    func upsertPhoto(_ photo: Photo) {
+        upsertPhotos([photo])
+    }
+
+    func upsertPhotos(_ photos: [Photo]) {
+        guard !photos.isEmpty else { return }
+
+        for photo in photos {
+            recordsById[photo.persistentModelID] = makeRecord(from: photo)
+        }
+
+        publishOrderedIndexChange()
+    }
+
+    func removePhoto(id: PersistentIdentifier) {
+        removePhotos(ids: [id])
+    }
+
+    func removePhotos(ids: [PersistentIdentifier]) {
+        guard !ids.isEmpty else { return }
+
+        for id in ids {
+            recordsById.removeValue(forKey: id)
+        }
+
+        publishOrderedIndexChange()
     }
     
     struct PhotoSearchRecord: Identifiable, Equatable {
@@ -161,7 +179,9 @@ final class SearchIndexService: ObservableObject {
     
     /// Build search index from all photos - call once on app start
     func buildIndex(modelContext: ModelContext) async {
-        isIndexing = true
+        if !isIndexing {
+            isIndexing = true
+        }
         indexProgress = 0.0
         
         let startTime = Date()
@@ -180,54 +200,40 @@ final class SearchIndexService: ObservableObject {
             var offset = 0
             
             while offset < totalCount {
-                autoreleasepool {
-                    var descriptor = FetchDescriptor<Photo>(
-                        sortBy: [SortDescriptor(\Photo.captureDate, order: .reverse), SortDescriptor(\Photo.filePath)]
-                    )
-                    descriptor.fetchLimit = batchSize
-                    descriptor.fetchOffset = offset
-                    descriptor.relationshipKeyPathsForPrefetching = [\.photoTags]
-                    
-                    do {
-                        let batch = try modelContext.fetch(descriptor)
-                        
-                        if batch.isEmpty {
-                            return
-                        } else {
-                            for photo in batch {
-                                let tagNames = photo.tags.map { $0.name }
-                                
-                                let record = PhotoSearchRecord(
-                                    id: photo.persistentModelID,
-                                    fileName: photo.fileName,
-                                    description: photo.photoDescription,
-                                    keywords: photo.keywords,
-                                    cameraMake: photo.cameraMake,
-                                    cameraModel: photo.cameraModel,
-                                    lensModel: photo.lensModel,
-                                    city: photo.city,
-                                    country: photo.country,
-                                    captureDate: photo.captureDate,
-                                    filePath: photo.filePath,
-                                    tagNames: tagNames
-                                )
-                                allRecords.append(record)
-                            }
-                            
-                            offset += batch.count
-                            indexProgress = Double(offset) / Double(totalCount)
-                            
-                            print("🔍 Processed \(offset)/\(totalCount) photos (\(Int(indexProgress * 100))%)")
-                        }
-                    } catch {
-                        print("❌ Error fetching batch: \(error)")
-                        return
+                var descriptor = FetchDescriptor<Photo>(
+                    sortBy: [SortDescriptor(\Photo.captureDate, order: .reverse), SortDescriptor(\Photo.filePath)]
+                )
+                descriptor.fetchLimit = batchSize
+                descriptor.fetchOffset = offset
+                descriptor.relationshipKeyPathsForPrefetching = [\.photoTags]
+
+                do {
+                    let batch = try modelContext.fetch(descriptor)
+
+                    if batch.isEmpty {
+                        break
                     }
+
+                    for photo in batch {
+                        allRecords.append(makeRecord(from: photo))
+                    }
+
+                    offset += batch.count
+                    indexProgress = Double(offset) / Double(totalCount)
+
+                    print("🔍 Processed \(offset)/\(totalCount) photos (\(Int(indexProgress * 100))%)")
+
+                    // Keep UI responsive and allow overlay/progress to repaint.
+                    await Task.yield()
+                } catch {
+                    print("❌ Error fetching batch: \(error)")
+                    break
                 }
             }
             
+            recordsById = Dictionary(uniqueKeysWithValues: allRecords.map { ($0.id, $0) })
             searchIndex = allRecords
-            lastIndexUpdate = Date()
+            publishIndexChange()
             indexProgress = 1.0
             
             print("🔍 Built index with \(allRecords.count) records in \(Date().timeIntervalSince(startTime))s")
@@ -318,9 +324,40 @@ final class SearchIndexService: ObservableObject {
     
     /// Set the search index from external source (e.g., IndexingService during scan)
     func setIndex(_ records: [PhotoSearchRecord]) {
+        recordsById = Dictionary(uniqueKeysWithValues: records.map { ($0.id, $0) })
         searchIndex = records
-        lastIndexUpdate = Date()
+        publishIndexChange()
         print("🔍 Search index set with \(records.count) records")
+    }
+
+    private func makeRecord(from photo: Photo) -> PhotoSearchRecord {
+        PhotoSearchRecord(
+            id: photo.persistentModelID,
+            fileName: photo.fileName,
+            description: photo.photoDescription,
+            keywords: photo.keywords,
+            cameraMake: photo.cameraMake,
+            cameraModel: photo.cameraModel,
+            lensModel: photo.lensModel,
+            city: photo.city,
+            country: photo.country,
+            captureDate: photo.captureDate,
+            filePath: photo.filePath,
+            tagNames: photo.tags.map { $0.name }
+        )
+    }
+
+    private func publishOrderedIndexChange() {
+        searchIndex = recordsById.values.sorted {
+            ($0.captureDate ?? Date.distantPast, $0.filePath) > ($1.captureDate ?? Date.distantPast, $1.filePath)
+        }
+        publishIndexChange()
+    }
+
+    private func publishIndexChange() {
+        lastIndexUpdate = Date()
+        indexVersion &+= 1
+        NotificationCenter.default.post(name: .searchIndexDidChange, object: nil)
     }
     
     /// Evaluate a smart folder rule and return matching photo IDs

@@ -25,15 +25,20 @@ actor IndexingService {
             progressHandler(0.05)
 
             var photosProcessed = 0
+            var pendingIndexIDs: [PersistentIdentifier] = []
             
             // Stream photos as they're discovered - process immediately
             try await iCloudService.streamPhotos(in: rootURL) { photoURL, folderPath in
-                await self.processPhoto(url: photoURL, folderPath: folderPath)
+                if let id = await self.processPhoto(url: photoURL, folderPath: folderPath) {
+                    pendingIndexIDs.append(id)
+                }
                 photosProcessed += 1
                 
                 // Save periodically to make photos visible in UI
                 if photosProcessed % 50 == 0 {
                     try? self.modelContext.save()
+                    await self.publishIndexUpserts(for: pendingIndexIDs)
+                    pendingIndexIDs.removeAll(keepingCapacity: true)
                 }
             } progressHandler: { photosFound in
                 // Progress updates continuously as photos are found
@@ -47,6 +52,7 @@ actor IndexingService {
             }
             
             try? modelContext.save()
+            await publishIndexUpserts(for: pendingIndexIDs)
             
             progressHandler(1.0)
             print("✅ Indexing complete: \(photosProcessed) photos indexed")
@@ -110,13 +116,13 @@ actor IndexingService {
         }
     }
     
-    private func processPhoto(url: URL, folderPath: String) async {
+    private func processPhoto(url: URL, folderPath: String) async -> PersistentIdentifier? {
         let descriptor = FetchDescriptor<Photo>(predicate: #Predicate { photo in
             photo.filePath == url.path
         })
         if let existing = try? modelContext.fetch(descriptor), !existing.isEmpty {
             print("Photo already indexed: \(url.lastPathComponent)")
-            return
+            return nil
         }
 
         let fileAttributes = try? FileManager.default.attributesOfItem(atPath: url.path)
@@ -162,6 +168,7 @@ actor IndexingService {
                 let thumb = PhotoThumbnail(photoFilePath: url.path, imageData: thumbnailData)
                 modelContext.insert(thumb)
             }
+            return photo.persistentModelID
         } catch {
             print("Cloud-only photo, indexing with partial data: \(url.lastPathComponent)")
             let photo = Photo(
@@ -172,6 +179,7 @@ actor IndexingService {
                 folder: folder
             )
             modelContext.insert(photo)
+            return photo.persistentModelID
         }
     }
 
@@ -184,14 +192,43 @@ actor IndexingService {
             guard !pending.isEmpty else { return nil }
 
             let total = pending.count
+            var pendingIndexIDs: [PersistentIdentifier] = []
             for (index, photo) in pending.enumerated() {
                 await enrichSinglePhoto(photo, rootURL: rootURL)
+                pendingIndexIDs.append(photo.persistentModelID)
+
+                if (index + 1) % 100 == 0 {
+                    try? modelContext.save()
+                    await publishIndexUpserts(for: pendingIndexIDs)
+                    pendingIndexIDs.removeAll(keepingCapacity: true)
+                }
+
                 progressHandler(Double(index + 1) / Double(total))
             }
             try? modelContext.save()
+            await publishIndexUpserts(for: pendingIndexIDs)
             return nil
         } catch {
             return error.localizedDescription
+        }
+    }
+
+    private func publishIndexUpserts(for ids: [PersistentIdentifier]) async {
+        guard !ids.isEmpty else { return }
+
+        let idSet = Set(ids)
+        let container = modelContainer
+
+        await MainActor.run {
+            let context = ModelContext(container)
+            let descriptor = FetchDescriptor<Photo>(
+                predicate: #Predicate { photo in
+                    idSet.contains(photo.persistentModelID)
+                }
+            )
+
+            guard let photos = try? context.fetch(descriptor), !photos.isEmpty else { return }
+            SearchIndexService.shared.upsertPhotos(photos)
         }
     }
 

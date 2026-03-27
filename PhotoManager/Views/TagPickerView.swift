@@ -113,8 +113,13 @@ struct TagPickerView: View {
             }
         }
         
-        try? modelContext.save()
-        dismiss()
+        do {
+            try modelContext.save()
+            SearchIndexService.shared.upsertPhoto(photo)
+            dismiss()
+        } catch {
+            print("Failed to save tags: \(error)")
+        }
     }
 }
 

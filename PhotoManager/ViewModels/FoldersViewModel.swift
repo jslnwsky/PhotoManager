@@ -718,4 +718,44 @@ class FoldersViewModel {
             print("❌ Backfill error: \(error)")
         }
     }
+    
+    // MARK: - Manual Hash Backfill
+    
+    func startHashBackfill(container: ModelContainer) {
+        guard !isAnyPipelineLocked else { return }
+        
+        Task {
+            await MainActor.run {
+                self.enrichmentPhase = .hashing
+                self.enrichmentProgress = 0.0
+                self.enrichmentDetail = "Computing content hashes..."
+            }
+            
+            let indexingService = IndexingService(modelContainer: container)
+            let rootURL = storedRootURL
+            
+            let error = await indexingService.backfillContentHashes(rootURL: rootURL) { progress in
+                Task { @MainActor in
+                    self.enrichmentProgress = progress
+                    self.enrichmentDetail = "Computing content hashes... \(Int(progress * 100))%"
+                }
+            }
+            
+            await MainActor.run {
+                if let error = error {
+                    self.enrichmentDetail = "Hash backfill failed: \(error)"
+                } else {
+                    self.enrichmentDetail = "Hash backfill complete"
+                    self.enrichmentProgress = 1.0
+                }
+                
+                // Reset after delay
+                DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+                    self.enrichmentPhase = .idle
+                    self.enrichmentProgress = 0.0
+                    self.enrichmentDetail = ""
+                }
+            }
+        }
+    }
 }

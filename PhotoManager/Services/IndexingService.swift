@@ -399,11 +399,25 @@ actor IndexingService {
     }
 
     private func computeContentHash(for photo: Photo) async -> String? {
+        // First check for existing thumbnail in database
+        let filePath = photo.filePath
+        let thumbnailDescriptor = FetchDescriptor<PhotoThumbnail>(
+            predicate: #Predicate { thumb in
+                thumb.photoFilePath == filePath
+            }
+        )
+        
+        if let existingThumbnail = try? modelContext.fetch(thumbnailDescriptor).first {
+            return computeDataContentHash(existingThumbnail.imageData)
+        }
+        
+        // Fall back to Photos API for photos:// assets
         if PhotoAssetHelper.isPhotosLibraryPhoto(photo) {
             guard let data = await loadPhotosAssetData(for: photo) else { return nil }
             return computeDataContentHash(data)
         }
 
+        // Fall back to file reading for local files
         guard let url = photo.fileURL else { return nil }
         return computeFileContentHash(at: url)
     }

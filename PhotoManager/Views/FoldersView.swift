@@ -327,6 +327,11 @@ struct FoldersView: View {
                         }
                         .disabled(vm.isBusy)
 
+                        Button { vm.startHashBackfill(container: modelContext.container) } label: {
+                            Label("PhotoFP", systemImage: "fingerprint")
+                        }
+                        .disabled(vm.isBusy)
+
                         Button { vm.startRecalculatePhotosLibraryFileSizes(container: modelContext.container) } label: {
                             Label("Recalculate File Sizes", systemImage: "externaldrive.fill.badge.person.crop")
                         }

@@ -242,6 +242,16 @@ struct FileInfoSection: View {
             MetadataRow(label: "File Name", value: photo.fileName)
             MetadataRow(label: "Size", value: formatFileSize(photo.fileSize))
             
+            if let contentHash = photo.contentHash {
+                MetadataRow(label: "Content Hash", value: String(contentHash.prefix(16)) + "...")
+                MetadataRow(label: "Hash Algorithm", value: photo.hashAlgorithm ?? "Unknown")
+                if let computedAt = photo.hashComputedAt {
+                    MetadataRow(label: "Hashed At", value: formatDate(computedAt))
+                }
+            } else {
+                MetadataRow(label: "Content Hash", value: "Not computed")
+            }
+            
             if !photo.folders.isEmpty {
                 MetadataRow(label: photo.folders.count == 1 ? "Folder" : "Folders",
                             value: photo.folders.map(\.name).joined(separator: ", "))
@@ -253,6 +263,13 @@ struct FileInfoSection: View {
         let formatter = ByteCountFormatter()
         formatter.countStyle = .file
         return formatter.string(fromByteCount: bytes)
+    }
+    
+    private func formatDate(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.dateStyle = .medium
+        formatter.timeStyle = .short
+        return formatter.string(from: date)
     }
 }
 
